@@ -37,8 +37,12 @@ if arch_version == 300:
     CUSTOMIZED_UNUSED_OPS = (
         "to_copy",
         "copy_",
+        "_to_copy",
     )
-elif arch_version == 400:
-    CUSTOMIZED_UNUSED_OPS = ("to_copy",)
+elif arch_version == 400 or arch_version == 410:
+    CUSTOMIZED_UNUSED_OPS = (
+        "to_copy",
+        "copy_",
+    )
 
 __all__ = ["*"]
