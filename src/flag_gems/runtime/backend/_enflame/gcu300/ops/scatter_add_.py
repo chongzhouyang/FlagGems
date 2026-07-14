@@ -174,7 +174,7 @@ def scatter_add_(inp, dim, index, src):
     Fast path: 2D tensors with dim=1 → Triton kernel.
     General case: CPU fallback.
     """
-    logger.debug("GEMS_GCU300 SCATTER_ADD_ (no-atomic Triton)")
+    logger.debug("GEMS_ENFLAME SCATTER_ADD_ (no-atomic Triton)")
 
     dim = dim % inp.ndim
 
