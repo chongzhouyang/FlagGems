@@ -195,7 +195,7 @@ def kron_kernel(
 
 
 def kron(A, B):
-    logger.debug("GEMS_ENFLAME KRON")
+    logger.debug("GEMS KRON")
     if A.dim() == 0 and B.dim() == 0:
         return A * B
 

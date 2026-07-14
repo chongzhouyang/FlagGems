@@ -13,10 +13,7 @@ device = device.name
 
 
 def _is_float64_scalar(*args):
-    return any(
-        isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0
-        for a in args
-    )
+    return any(isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0 for a in args)
 
 
 @pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
@@ -30,7 +27,7 @@ def maximum_kernel(X, Y):
 
 
 def maximum(X, Y):
-    logger.debug("GEMS_ENFLAME MAXIMUM")
+    logger.debug("GEMS MAXIMUM")
     if _is_float64_scalar(X, Y):
         dev = X.device
         return torch.maximum(X.cpu(), Y.cpu()).to(dev)

@@ -431,12 +431,12 @@ def sort_kernel(
 
 def sort(inp, dim=-1, descending=False):
     # We only implement stable radix sort here
-    logger.debug("GEMS_ENFLAME SORT")
+    logger.debug("GEMS SORT")
     return sort_stable(inp, stable=False, dim=dim, descending=descending)
 
 
 def sort_stable(inp, *, stable, dim=-1, descending=False):
-    logger.debug("GEMS_ENFLAME SORT_STABLE")
+    logger.debug("GEMS SORT.STABLE")
 
     _ = stable
     sort_elem_cnt = inp.shape[dim]

@@ -14,10 +14,7 @@ device = device.name
 
 
 def _is_float64_scalar(*args):
-    return any(
-        isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0
-        for a in args
-    )
+    return any(isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0 for a in args)
 
 
 @pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")])
@@ -32,7 +29,7 @@ def eq(A, B):
             B = B.to(A.device)
         else:
             A = A.to(B.device)
-    logger.debug("GEMS_ENFLAME EQ")
+    logger.debug("GEMS EQ")
     if _is_float64_scalar(A, B):
         dev = A.device
         return torch.eq(A.cpu(), B.cpu()).to(dev)
@@ -46,14 +43,14 @@ def eq_func_scalar(x, y):
 
 
 def eq_scalar(A, B):
-    logger.debug("GEMS_ENFLAME EQ_SCALAR")
+    logger.debug("GEMS EQ SCALAR")
     if _is_float64_scalar(A):
         return torch.eq(A.cpu(), B).to(A.device)
     return eq_func_scalar(A, B)
 
 
 def equal(x: torch.Tensor, y: torch.Tensor) -> bool:
-    logger.debug("GEMS_ENFLAME EQUAL")
+    logger.debug("GEMS EQUAL")
     if x.shape != y.shape:
         return False
     eq_tensor = eq(x, y)

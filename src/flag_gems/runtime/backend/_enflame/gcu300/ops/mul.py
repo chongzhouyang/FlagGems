@@ -9,10 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_float64_scalar(*args):
-    return any(
-        isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0
-        for a in args
-    )
+    return any(isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0 for a in args)
 
 
 def _to_compute_dtype(result_dtype):
@@ -45,7 +42,7 @@ def mul_func_scalar(x, y):
 
 
 def mul(A, B):
-    logger.debug("GEMS_ENFLAME MUL")
+    logger.debug("GEMS MUL")
     if _is_float64_scalar(A, B):
         device = A.device if isinstance(A, torch.Tensor) else B.device
         A_cpu = A.cpu() if isinstance(A, torch.Tensor) else A
@@ -68,7 +65,7 @@ def mul(A, B):
 
 
 def mul_(A, B):
-    logger.debug("GEMS_ENFLAME MUL_")
+    logger.debug("GEMS MUL_")
     if _is_float64_scalar(A, B):
         A_cpu = A.cpu()
         B_cpu = B.cpu() if isinstance(B, torch.Tensor) else B

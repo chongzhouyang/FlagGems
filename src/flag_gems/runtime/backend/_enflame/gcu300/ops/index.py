@@ -284,7 +284,7 @@ _index_func = IndexFunction()
 
 
 def index(inp, indices):
-    logger.debug("GEMS_ENFLAME INDEX")
+    logger.debug("GEMS INDEX")
     original_indices = list(indices)  # Save original indices for later checks
     indices = list(indices)
 
@@ -432,6 +432,7 @@ def index(inp, indices):
 
     # Step 7: Handle empty tensor case
     if inp.numel() == 0:
+        print(f"222out.stride:{out.stride()}")
         return out.contiguous()
 
     # Step 8: Extract only tensor indices for kernel

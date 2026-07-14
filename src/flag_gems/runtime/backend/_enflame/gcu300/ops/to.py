@@ -116,7 +116,7 @@ def to_copy(
         raise NotImplementedError(
             "float64 tensors are not supported in FlagGems to_copy yet."
         )
-
+    
     if target_device != x.device or (
         x.device.type == "cpu" and target_device.type == "cpu"
     ):
@@ -131,7 +131,7 @@ def to_copy(
             memory_format=target_memory_format,
         )
 
-    logger.debug("GEMS_ENFLAME TO_COPY")
+    logger.debug("GEMS _TO_COPY")
     empty_kwargs = {"dtype": target_dtype, "device": target_device}
 
     if target_memory_format is torch.preserve_format:

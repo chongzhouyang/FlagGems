@@ -59,7 +59,9 @@ def _gen_kernel_inner_body(inp_rank, indices_len, index_rank, code):
     code.writeline("mask = index_mask & mask0 & mask1")
     code.newline()
     comp = [f"cur_index{i} * input_stride{i}" for i in range(indices_len)]
-    comp += [f"input_idx{i} * input_stride{i}" for i in range(indices_len, inp_rank)]
+    comp += [
+        f"input_idx{i} * input_stride{i}" for i in range(indices_len, inp_rank)
+    ]
     code.writeline(f"input_offset = {' + '.join(comp)}")
     comp = [f"indices_idx{i} * values_stride{i}" for i in range(index_rank)]
     comp += [
@@ -184,7 +186,9 @@ def generate_index_put_kernel(
             _gen_kernel_inner_body(inp_rank, indices_len, index_rank, code)
         else:
             code.writeline("num_pid1 = tl.num_programs(1)")
-            code.writeline("num_blocks_n = (N + BLOCK_SIZE1 - 1) // BLOCK_SIZE1")
+            code.writeline(
+                "num_blocks_n = (N + BLOCK_SIZE1 - 1) // BLOCK_SIZE1"
+            )
             code.writeline(
                 "for pid1 in tl.range(tl.program_id(1), num_blocks_n, num_pid1):"
             )
@@ -233,7 +237,9 @@ def generate_index_put_wrapper(
             with code.indent():
                 code.writeline("triton.cdiv(M, block_size0),")
                 if inp_rank != indices_len:
-                    code.writeline("min(triton.cdiv(N, block_size1), 255),")
+                    code.writeline(
+                        "min(triton.cdiv(N, block_size1), 255),"
+                    )
                 else:
                     code.writeline("triton.cdiv(N, block_size1),")
             code.writeline(")")
@@ -328,7 +334,7 @@ _index_put_func = IndexPutFunction()
 
 
 def index_put(inp, indices, values, accumulate=False):
-    logger.debug("GEMS_ENFLAME INDEX_PUT")
+    logger.debug("GEMS INDEX PUT")
 
     indices = list(indices)
     if len(indices) == 1 and indices[0].dtype == torch.bool:
@@ -398,7 +404,7 @@ def index_put(inp, indices, values, accumulate=False):
 
 
 def index_put_(inp, indices, values, accumulate=False):
-    logger.debug("GEMS_ENFLAME INDEX_PUT_")
+    logger.debug("GEMS INDEX PUT_")
 
     indices = list(indices)
     if len(indices) == 1 and indices[0].dtype == torch.bool:
@@ -464,6 +470,8 @@ def index_put_(inp, indices, values, accumulate=False):
 
 
 def _index_put_impl_(inp, indices, values, accumulate=False, unsafe=False):
+    logger.debug("GEMS _INDEX_PUT_IMPL_")
+
     indices = list(indices)
 
     if not indices:
@@ -488,7 +496,7 @@ def _index_put_impl_(inp, indices, values, accumulate=False, unsafe=False):
             mask = mask.bool()
         indices = [idx.to(inp.device) for idx in torch.where(mask.cpu())]
         K = indices[0].numel()
-        target_shape = (K,) + inp.shape[len(indices) :]
+        target_shape = (K,) + inp.shape[len(indices):]
         values = values.to(inp.device)
         if values.numel() == 1:
             values = torch.full(
@@ -499,7 +507,8 @@ def _index_put_impl_(inp, indices, values, accumulate=False, unsafe=False):
         else:
             values = values.broadcast_to(target_shape)
         tensor_indices = [
-            idx.to(torch.int32) if idx.dtype == torch.int64 else idx for idx in indices
+            idx.to(torch.int32) if idx.dtype == torch.int64 else idx
+            for idx in indices
         ]
         _index_put_func(inp, tensor_indices, values, accumulate)
         return inp
@@ -575,7 +584,8 @@ def _index_put_impl_(inp, indices, values, accumulate=False, unsafe=False):
         values = values.broadcast_to(target_shape)
 
     tensors = [
-        idx.to(torch.int32) if idx.dtype == torch.int64 else idx for idx in tensors
+        idx.to(torch.int32) if idx.dtype == torch.int64 else idx
+        for idx in tensors
     ]
 
     _index_put_func(inp_view, tensors, values, accumulate)

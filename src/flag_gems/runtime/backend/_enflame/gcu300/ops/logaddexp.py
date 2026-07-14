@@ -19,5 +19,5 @@ def logaddexp_func(x, y):
 
 
 def logaddexp(self, other):
-    logger.debug("GEMS_ENFLAME LOGADDEXP")
+    logger.debug("GEMS LOGADDEXP")
     return logaddexp_func(self, other)

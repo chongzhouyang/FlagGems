@@ -282,7 +282,7 @@ def topk_stage2_kernel(
 
 
 def topk(x, k, dim=-1, largest=True, sorted=True):
-    logger.debug("GEMS_ENFLAME TOPK")
+    logger.debug("GEMS TOPK")
     # k can be 0 and should return empty tensors
     if k == 0:
         if dim < 0:

@@ -91,7 +91,7 @@ def true_div_func_scalar_tensor(x, y):
 
 
 def true_divide(A, B):
-    logger.debug("GEMS_ENFLAME TRUE_DIVIDE")
+    logger.debug("GEMS TRUE_DIVIDE")
     if _is_float64(A, B):
         return _cpu_div(A, B)
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
@@ -115,7 +115,7 @@ def true_divide(A, B):
 
 
 def true_divide_(A, B):
-    logger.debug("GEMS_ENFLAME TRUE_DIVIDE_")
+    logger.debug("GEMS TRUE_DIVIDE_")
     if _is_float64(A, B):
         return _cpu_div_inplace(A, B)
     if isinstance(B, torch.Tensor):
@@ -147,7 +147,7 @@ def trunc_div_func_scalar_tensor(x, y):
 
 
 def trunc_divide(A, B):
-    logger.debug("GEMS_ENFLAME TRUNC_DIVIDE")
+    logger.debug("GEMS TRUNC_DIVIDE")
     if _is_float64(A, B):
         return _cpu_div(A, B, rounding_mode="trunc")
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
@@ -171,7 +171,7 @@ def trunc_divide(A, B):
 
 
 def trunc_divide_(A, B):
-    logger.debug("GEMS_ENFLAME TRUNC_DIVIDE_")
+    logger.debug("GEMS TRUNC_DIVIDE_")
     if _is_float64(A, B):
         return _cpu_div_inplace(A, B, rounding_mode="trunc")
     if isinstance(B, torch.Tensor):
@@ -268,7 +268,7 @@ def floor_div_func_scalar_tensor(x, y):
 
 
 def floor_divide(A, B):
-    logger.debug("GEMS_ENFLAME FLOOR_DIVIDE")
+    logger.debug("GEMS FLOOR_DIVIDE")
     if _is_float64(A, B):
         return _cpu_div(A, B, rounding_mode="floor")
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
@@ -292,7 +292,7 @@ def floor_divide(A, B):
 
 
 def floor_divide_(A, B):
-    logger.debug("GEMS_ENFLAME FLOOR_DIVIDE_")
+    logger.debug("GEMS FLOOR_DIVIDE_")
     if _is_float64(A, B):
         return _cpu_div_inplace(A, B, rounding_mode="floor")
     if isinstance(B, torch.Tensor):
@@ -356,7 +356,7 @@ def rem_st(x, y):
 
 
 def remainder(A, B):
-    logger.debug("GEMS_ENFLAME FLOOR_DIVIDE")
+    logger.debug("GEMS FLOOR_DIVIDE")
     if _is_float64(A, B):
         return _cpu_remainder(A, B)
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
@@ -380,7 +380,7 @@ def remainder(A, B):
 
 
 def remainder_(A, B):
-    logger.debug("GEMS_ENFLAME REMAINDER_")
+    logger.debug("GEMS REMAINDER_")
     if _is_float64(A, B):
         return _cpu_remainder_inplace(A, B)
     if isinstance(B, torch.Tensor):

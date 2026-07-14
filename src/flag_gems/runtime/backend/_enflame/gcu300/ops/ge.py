@@ -10,10 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_float64_scalar(*args):
-    return any(
-        isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0
-        for a in args
-    )
+    return any(isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0 for a in args)
 
 
 @pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")])
@@ -23,11 +20,11 @@ def ge_func(x, y):
 
 
 def ge(A, B):
-    logger.debug("GEMS_ENFLAME GE")
-    if isinstance(A, torch.Tensor) and A.dtype == torch.int64:
-        A = A.to(torch.int32)
-    if isinstance(B, torch.Tensor) and B.dtype == torch.int64:
-        B = B.to(torch.int32)
+    logger.debug("GEMS GE")
+    if isinstance(A, torch.Tensor) and A.dtype==torch.int64:
+        A=A.to(torch.int32)
+    if isinstance(B, torch.Tensor) and B.dtype==torch.int64:
+        B=B.to(torch.int32)
     if _is_float64_scalar(A, B):
         dev = A.device if isinstance(A, torch.Tensor) else B.device
         A_cpu = A.cpu() if isinstance(A, torch.Tensor) else A
@@ -43,11 +40,11 @@ def ge_func_scalar(x, y):
 
 
 def ge_scalar(A, B):
-    logger.debug("GEMS_ENFLAME GE_SCALAR")
-    if isinstance(A, torch.Tensor) and A.dtype == torch.int64:
-        A = A.to(torch.int32)
-    if isinstance(B, torch.Tensor) and B.dtype == torch.int64:
-        B = B.to(torch.int32)
+    logger.debug("GEMS GE SCALAR")
+    if isinstance(A, torch.Tensor) and A.dtype==torch.int64:
+        A=A.to(torch.int32)
+    if isinstance(B, torch.Tensor) and B.dtype==torch.int64:
+        B=B.to(torch.int32)
     if _is_float64_scalar(A):
         return torch.ge(A.cpu(), B).to(A.device)
     return ge_func_scalar(A, B)

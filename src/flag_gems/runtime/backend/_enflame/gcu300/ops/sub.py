@@ -9,10 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_float64_scalar(*args):
-    return any(
-        isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0
-        for a in args
-    )
+    return any(isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0 for a in args)
 
 
 @pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
@@ -44,7 +41,7 @@ def sub_func_scalar_tensor(x, y, alpha):
 
 
 def sub(A, B, *, alpha=1):
-    logger.debug("GEMS_ENFLAME SUB")
+    logger.debug("GEMS SUB")
     if _is_float64_scalar(A, B):
         device = A.device if isinstance(A, torch.Tensor) else B.device
         A_cpu = A.cpu() if isinstance(A, torch.Tensor) else A
@@ -72,7 +69,7 @@ def sub(A, B, *, alpha=1):
 
 
 def sub_(A, B, *, alpha=1):
-    logger.debug("GEMS_ENFLAME SUB_")
+    logger.debug("GEMS SUB_")
     if _is_float64_scalar(A, B):
         A_cpu = A.cpu()
         B_cpu = B.cpu() if isinstance(B, torch.Tensor) else B

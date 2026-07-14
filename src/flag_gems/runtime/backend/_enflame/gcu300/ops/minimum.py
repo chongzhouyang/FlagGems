@@ -13,10 +13,7 @@ device = device.name
 
 
 def _is_float64_scalar(*args):
-    return any(
-        isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0
-        for a in args
-    )
+    return any(isinstance(a, torch.Tensor) and a.dtype == torch.float64 and a.ndim == 0 for a in args)
 
 
 @pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 0, "DEFAULT")])
@@ -29,7 +26,7 @@ def minimum_kernel(X, Y):
 
 
 def minimum(X, Y):
-    logger.debug("GEMS_ENFLAME MINIMUM")
+    logger.debug("GEMS MINIMUM")
     if _is_float64_scalar(X, Y):
         dev = X.device
         return torch.minimum(X.cpu(), Y.cpu()).to(dev)

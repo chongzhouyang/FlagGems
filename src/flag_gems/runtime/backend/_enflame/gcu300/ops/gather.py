@@ -199,7 +199,7 @@ _gather_func = GatherFunction()
 
 
 def gather(inp, dim, index, out=None, sparse_grad=False):
-    logger.debug("GEMS_ENFLAME GATHER")
+    logger.debug("GEMS GATHER")
 
     # index must have same number of dimensions as input
     if index.ndim != inp.ndim:
@@ -221,6 +221,6 @@ def gather(inp, dim, index, out=None, sparse_grad=False):
 
 
 def gather_backward(grad, self, dim, index, sparse_grad):
-    logger.debug("GEMS_ENFLAME GATHER_BACKWARD")
+    logger.debug("GEMS GATHER BACKWARD")
     result = grad.new_zeros(self.shape)
     return scatter_(result, dim, index, grad, reduce="add")
