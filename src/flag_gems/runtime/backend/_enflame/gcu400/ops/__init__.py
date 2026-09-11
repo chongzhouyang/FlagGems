@@ -15,7 +15,8 @@
 from ._functional_sym_constrain_range_for_size import (
     _functional_sym_constrain_range_for_size,
 )
-from ._safe_softmax import _safe_softmax  # noqa: F401
+from ._safe_softmax import _safe_softmax
+from ._scaled_dot_product_flash_attention import _scaled_dot_product_flash_attention
 from ._upsample_nearest_exact1d import (
     _upsample_nearest_exact1d,
     _upsample_nearest_exact1d_out,
@@ -37,11 +38,14 @@ from .argmin import argmin
 from .atan import atan, atan_
 from .attention import (
     ScaleDotProductAttention,
+    flash_attention_forward,
+    flash_attn_varlen_func,
     scaled_dot_product_attention,
     scaled_dot_product_attention_backward,
     scaled_dot_product_attention_forward,
 )
 from .avg_pool2d import avg_pool2d, avg_pool2d_backward
+from .baddbmm import baddbmm, baddbmm_out
 from .bitwise_and import (
     bitwise_and_scalar,
     bitwise_and_scalar_,
@@ -105,7 +109,7 @@ from .fill import fill_scalar, fill_scalar_, fill_tensor, fill_tensor_
 from .flip import flip
 from .floor_ import floor_
 from .fmin import fmin, fmin_out
-from .fractional_max_pool2d import (  # noqa: F401
+from .fractional_max_pool2d import (
     fractional_max_pool2d,
     fractional_max_pool2d_backward,
 )
@@ -165,8 +169,11 @@ from .mul import mul, mul_
 from .multinomial import multinomial
 from .multiply_ import multiply_
 from .nan_to_num import nan_to_num
+from .native_layer_norm import native_layer_norm
 from .ne import ne, ne_scalar
 from .neg import neg, neg_
+from .nonzero import nonzero
+from .nonzero_numpy import nonzero_numpy
 from .normal import (
     normal_,
     normal_float_tensor,
@@ -178,6 +185,7 @@ from .ones import ones
 from .ones_like import ones_like
 from .pad import pad
 from .poisson import poisson
+from .polar import polar
 from .pow import (
     pow_scalar,
     pow_tensor_scalar,
@@ -234,6 +242,7 @@ from .tanh import tanh, tanh_, tanh_backward
 from .threshold import threshold, threshold_backward
 from .tile import tile
 from .to import to_dtype
+from .kron import kron
 from .topk import topk
 from .tril import tril, tril_, tril_out
 from .uniform import uniform_
@@ -259,7 +268,8 @@ from .zeros_like import zeros_like
 __all__ = [
     "_functional_sym_constrain_range_for_size",
     "_index_put_impl_",
-    "_saft_softmax",
+    "_safe_softmax",
+    "_scaled_dot_product_flash_attention",
     "_unique2",
     "_upsample_bicubic2d_aa",
     "_upsample_nearest_exact1d",
@@ -292,6 +302,8 @@ __all__ = [
     "atan_",
     "avg_pool2d",
     "avg_pool2d_backward",
+    "baddbmm",
+    "baddbmm_out",
     "bitwise_and_scalar",
     "bitwise_and_scalar_",
     "bitwise_and_scalar_tensor",
@@ -369,6 +381,8 @@ __all__ = [
     "floor_divide_",
     "fmin",
     "fmin_out",
+    "fractional_max_pool2d",
+    "fractional_max_pool2d_backward",
     "full",
     "full_like",
     "gather",
@@ -407,6 +421,7 @@ __all__ = [
     "isin",
     "isinf",
     "isnan",
+    "kron",
     "layer_norm",
     "layer_norm_backward",
     "le",
@@ -454,10 +469,13 @@ __all__ = [
     "multinomial",
     "multiply_",
     "nan_to_num",
+    "native_layer_norm",
     "ne",
     "ne_scalar",
     "neg",
     "neg_",
+    "nonzero",
+    "nonzero_numpy",
     "normal_",
     "normal_float_tensor",
     "normal_tensor_float",
@@ -554,7 +572,6 @@ __all__ = [
     "tile",
     "to_dtype",
     "topk",
-    "topk_backward",
     "tril",
     "tril_",
     "tril_out",
