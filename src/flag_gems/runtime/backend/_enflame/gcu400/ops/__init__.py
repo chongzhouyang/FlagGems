@@ -109,10 +109,7 @@ from .fill import fill_scalar, fill_scalar_, fill_tensor, fill_tensor_
 from .flip import flip
 from .floor_ import floor_
 from .fmin import fmin, fmin_out
-from .fractional_max_pool2d import (
-    fractional_max_pool2d,
-    fractional_max_pool2d_backward,
-)
+from .fractional_max_pool2d import fractional_max_pool2d, fractional_max_pool2d_backward
 from .full import full
 from .full_like import full_like
 from .gather import gather, gather_backward
@@ -138,6 +135,7 @@ from .isfinite import isfinite
 from .isin import isin
 from .isinf import isinf
 from .isnan import isnan
+from .kron import kron
 from .layernorm import layer_norm, layer_norm_backward
 from .le import le, le_scalar
 from .leaky_relu import leaky_relu, leaky_relu_, leaky_relu_out
@@ -242,7 +240,6 @@ from .tanh import tanh, tanh_, tanh_backward
 from .threshold import threshold, threshold_backward
 from .tile import tile
 from .to import to_dtype
-from .kron import kron
 from .topk import topk
 from .tril import tril, tril_, tril_out
 from .uniform import uniform_

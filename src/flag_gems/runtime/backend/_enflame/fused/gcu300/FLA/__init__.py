@@ -6,6 +6,7 @@
 # GCU300: only override fused_recurrent (int32-rewritten). chunk_gated_delta_rule
 # has no int64 and reuses the generic implementation.
 from flag_gems.fused.FLA.chunk import chunk_gated_delta_rule_fwd
+
 from .fused_recurrent import fused_recurrent_gated_delta_rule_fwd
 
 __all__ = [

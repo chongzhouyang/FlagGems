@@ -222,9 +222,12 @@ def softmax_rescale(
 
 
 @triton.jit
-def apply_softcap(S, softcap,
-                  is_softcap: tl.constexpr,
-                  ENABLE_I64: tl.constexpr = True,):
+def apply_softcap(
+    S,
+    softcap,
+    is_softcap: tl.constexpr,
+    ENABLE_I64: tl.constexpr = True,
+):
     if is_softcap:
         S = tl_extra_shim.tanh(S * softcap)
 
@@ -762,7 +765,9 @@ def flash_fwd_kernel(
 
 
 @triton.jit(do_not_specialize=["seqlen_q", "seqlen_k"])
-def flash_fwd_bh_parallel_kernel(ENABLE_I64: tl.constexpr = True,):
+def flash_fwd_bh_parallel_kernel(
+    ENABLE_I64: tl.constexpr = True,
+):
     # (TODO)
     pass
 

@@ -30,8 +30,13 @@ def _check_int_arg(value, name):
 
 
 @triton.jit
-def _load_nonzero_flags(x_ptr, offsets, mask, IS_COMPLEX: tl.constexpr,
-                        ENABLE_I64: tl.constexpr,):
+def _load_nonzero_flags(
+    x_ptr,
+    offsets,
+    mask,
+    IS_COMPLEX: tl.constexpr,
+    ENABLE_I64: tl.constexpr,
+):
     if IS_COMPLEX:
         base_offsets = offsets * 2
         real = tl.load(x_ptr + base_offsets, mask=mask, other=0)

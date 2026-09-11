@@ -316,7 +316,11 @@ def kron_v3_kernel(
 
                 c = a_val * b_val
                 c_off = a_row * (M2 * N) + a_col * N2
-                c_idx = c_off + g_offs_bm[:, None] * c_stride_0 + g_offs_bn[None, :] * c_stride_1
+                c_idx = (
+                    c_off
+                    + g_offs_bm[:, None] * c_stride_0
+                    + g_offs_bn[None, :] * c_stride_1
+                )
                 if NEED_MASK:
                     c_idx = tl.where(b_mask, c_idx, 0)
                     tl.store(c_ptr + c_idx, c, mask=b_mask)
@@ -336,7 +340,11 @@ def kron_v3_kernel(
                 c = a_val[:, None, None] * b_val[None, :, :]
 
                 c_off = a_row[:, None, None] * (M2 * N) + a_col[:, None, None] * N2
-                c_idx = c_off + g_offs_bm[None, :, None] * c_stride_0 + g_offs_bn[None, None, :] * c_stride_1
+                c_idx = (
+                    c_off
+                    + g_offs_bm[None, :, None] * c_stride_0
+                    + g_offs_bn[None, None, :] * c_stride_1
+                )
                 c_idx = tl.where(b_mask[None, :, :], c_idx, 0)
                 c_ok = a_ok[:, None, None] & b_mask[None, :, :]
                 tl.store(c_ptr + c_idx, c, mask=c_ok)
@@ -352,10 +360,16 @@ def kron_v3_kernel(
             a_batch_idx = tl.load(map_ptr + off)
             b_batch_idx = tl.load(map_ptr + off + 1)
 
-            a_idx = a_batch_idx * a_batch_stride + a_row * a_stride_0 + a_col * a_stride_1
+            a_idx = (
+                a_batch_idx * a_batch_stride + a_row * a_stride_0 + a_col * a_stride_1
+            )
             a_val = tl.load(a_ptr + a_idx)
 
-            b_idx = b_batch_idx * b_batch_stride + g_offs_bm[:, None] * N2 + g_offs_bn[None, :]
+            b_idx = (
+                b_batch_idx * b_batch_stride
+                + g_offs_bm[:, None] * N2
+                + g_offs_bn[None, :]
+            )
             if NEED_MASK:
                 b_idx = tl.where(b_mask, b_idx, 0)
                 b_val = tl.load(b_ptr + b_idx, mask=b_mask, other=0.0)
@@ -365,7 +379,11 @@ def kron_v3_kernel(
             c = a_val * b_val
 
             c_off = batch_id * c_batch_stride + a_row * (M2 * N) + a_col * N2
-            c_idx = c_off + g_offs_bm[:, None] * c_stride_0 + g_offs_bn[None, :] * c_stride_1
+            c_idx = (
+                c_off
+                + g_offs_bm[:, None] * c_stride_0
+                + g_offs_bn[None, :] * c_stride_1
+            )
             if NEED_MASK:
                 c_idx = tl.where(b_mask, c_idx, 0)
                 tl.store(c_ptr + c_idx, c, mask=b_mask)
@@ -430,7 +448,9 @@ def kron_v4_kernel(
             off = batch_id * 2
             a_batch_idx = tl.load(map_ptr + off)
             b_batch_idx = tl.load(map_ptr + off + 1)
-            a_idx = a_batch_idx * a_batch_stride + a_row * a_stride_0 + a_col * a_stride_1
+            a_idx = (
+                a_batch_idx * a_batch_stride + a_row * a_stride_0 + a_col * a_stride_1
+            )
             b_idx = b_batch_idx * b_batch_stride + b_row * N2 + b_col
 
         if NEED_MASK:

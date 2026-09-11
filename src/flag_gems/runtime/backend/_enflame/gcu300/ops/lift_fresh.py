@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 @triton.jit
-def _copy_kernel(in_ptr, out_ptr, n_elements,
-                 BLOCK_SIZE: tl.constexpr, ENABLE_I64: tl.constexpr):
+def _copy_kernel(
+    in_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr, ENABLE_I64: tl.constexpr
+):
     pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -75,7 +76,6 @@ def lift_fresh(*args, **kwargs):
     # BLOCK_SIZE=1024 mirrors the sibling lift_fresh_copy kernel; the op is a
     # memory-bandwidth-bound copy, so a fixed block matches its performance.
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    _copy_kernel[grid](x_contig, out, n_elements,
-                       BLOCK_SIZE=1024, ENABLE_I64=True)
+    _copy_kernel[grid](x_contig, out, n_elements, BLOCK_SIZE=1024, ENABLE_I64=True)
 
     return out.view_as(x_contig)

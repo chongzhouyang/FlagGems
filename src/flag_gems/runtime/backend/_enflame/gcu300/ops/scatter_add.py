@@ -22,10 +22,9 @@ import triton
 import triton.language as tl
 
 import flag_gems
-from flag_gems.utils import libentry
+from flag_gems.utils import dim_compress, libentry, restride_dim
 from flag_gems.utils.code_cache import code_cache_dir
 from flag_gems.utils.code_utils import IndentedBuffer
-from flag_gems.utils import dim_compress, restride_dim
 
 logger = logging.getLogger(__name__)
 

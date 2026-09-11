@@ -55,7 +55,8 @@ def zeros(size, *, dtype=None, layout=None, device=None, pin_memory=None):
     grid_fn = lambda meta: (min(triton.cdiv(N, meta["BLOCK_SIZE"]), 24),)
     with torch_device_fn.device(device):
         zeros_kernel[grid_fn](
-            out, N, BLOCK_SIZE=1024 * 128, num_warps=1, ENABLE_I64=True)
+            out, N, BLOCK_SIZE=1024 * 128, num_warps=1, ENABLE_I64=True
+        )
     return out
 
 
@@ -64,6 +65,5 @@ def zero_(x: torch.Tensor) -> torch.Tensor:
     N = x.numel()
     grid_fn = lambda meta: (min(triton.cdiv(N, meta["BLOCK_SIZE"]), 24),)
     with torch_device_fn.device(x.device):
-        zeros_kernel[grid_fn](
-            x, N, BLOCK_SIZE=1024 * 128, num_warps=1, ENABLE_I64=True)
+        zeros_kernel[grid_fn](x, N, BLOCK_SIZE=1024 * 128, num_warps=1, ENABLE_I64=True)
     return x

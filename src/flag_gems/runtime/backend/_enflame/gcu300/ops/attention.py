@@ -22,9 +22,10 @@ import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.config import use_c_extension
-from .flash_api import mha_fwd, mha_varlan_fwd
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry, libtuner
+
+from .flash_api import mha_fwd, mha_varlan_fwd
 
 logger = logging.getLogger(__name__)
 

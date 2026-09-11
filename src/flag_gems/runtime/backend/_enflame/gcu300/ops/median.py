@@ -288,9 +288,7 @@ def median_bool_dim_reduce_chunks_kernel(
     in_base = row * input_chunks + chunk_offsets
 
     counts = tl.load(counts_in + in_base, mask=valid, other=0)
-    first_false = tl.load(
-        first_false_in + in_base, mask=valid, other=2147483647
-    )
+    first_false = tl.load(first_false_in + in_base, mask=valid, other=2147483647)
     first_true = tl.load(first_true_in + in_base, mask=valid, other=2147483647)
 
     true_count = tl.sum(counts, axis=0)

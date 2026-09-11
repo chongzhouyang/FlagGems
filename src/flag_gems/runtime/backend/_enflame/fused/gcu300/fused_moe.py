@@ -24,10 +24,11 @@ import triton
 import triton.language as tl
 import yaml
 
+from flag_gems.runtime import device, torch_device_fn
+
+from ...gcu300.utils.pointwise_dynamic import pointwise_dynamic
 from .moe_align_block_size import moe_align_block_size
 from .moe_sum import moe_sum
-from flag_gems.runtime import device, torch_device_fn
-from ...gcu300.utils.pointwise_dynamic import pointwise_dynamic
 
 logger = logging.getLogger(__name__)
 

@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 @triton.jit
-def _copy_kernel(in_ptr, out_ptr, n_elements,
-                 BLOCK_SIZE: tl.constexpr,
-                 ENABLE_I64: tl.constexpr):
+def _copy_kernel(
+    in_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr, ENABLE_I64: tl.constexpr
+):
     pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -62,8 +62,7 @@ def lift_fresh_copy(*args, **kwargs):
 
     n_elements = x_contig.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    _copy_kernel[grid](x_contig, out, n_elements,
-                       BLOCK_SIZE=1024, ENABLE_I64=True)
+    _copy_kernel[grid](x_contig, out, n_elements, BLOCK_SIZE=1024, ENABLE_I64=True)
 
     return out.view_as(x_contig)
 
@@ -94,7 +93,6 @@ def lift_fresh_copy_out(x: torch.Tensor, out: torch.Tensor = None):
 
     n_elements = x_contig.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    _copy_kernel[grid](x_contig, out, n_elements,
-                       BLOCK_SIZE=1024, ENABLE_I64=True)
+    _copy_kernel[grid](x_contig, out, n_elements, BLOCK_SIZE=1024, ENABLE_I64=True)
 
     return out.view_as(x_contig)

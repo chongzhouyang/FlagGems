@@ -203,9 +203,7 @@ def generate_index_rowcopy_kernel(
         code.writeline("row_base = input_ptr")
         for i in range(indices_len):
             comp = [f"coord{j} * indices{i}_stride{j}" for j in range(index_rank)]
-            code.writeline(
-                f"idxval{i} = tl.load(indices{i}_ptr + {' + '.join(comp)})"
-            )
+            code.writeline(f"idxval{i} = tl.load(indices{i}_ptr + {' + '.join(comp)})")
             code.writeline(
                 f"idxval{i} = tl.where(idxval{i} >= 0, "
                 f"tl.minimum(idxval{i}, input_shape{i} - 1), 0)"
@@ -257,7 +255,9 @@ def generate_index_wrapper(
         code.writeline("for _s in out_shape:")
         with code.indent():
             code.writeline("_rc_vol = _rc_vol * _s")
-        code.writeline("_rc_ok = _rc_ok and (_rc_vol == M * N) and (N >= 64) and (M >= 1)")
+        code.writeline(
+            "_rc_ok = _rc_ok and (_rc_vol == M * N) and (N >= 64) and (M >= 1)"
+        )
         code.writeline("if _rc_ok:")
         with code.indent():
             code.writeline(
@@ -269,7 +269,7 @@ def generate_index_wrapper(
             code.writeline("if M * _yr <= 65535:")
             with code.indent():
                 code.writeline("_rc_grid = (M * _yr, min(255, _yblk))")
-                code.writeline(f"_index_rowcopy_jit_function[_rc_grid](")
+                code.writeline("_index_rowcopy_jit_function[_rc_grid](")
                 with code.indent():
                     args = ["input,"]
                     args += [f"indices[{i}]," for i in range(indices_len)]
@@ -279,9 +279,7 @@ def generate_index_wrapper(
                     args += [f"input_stride[{i}]," for i in range(indices_len)]
                     args += [f"indices0_shape[{j}]," for j in range(index_rank)]
                     for i in range(indices_len):
-                        args += [
-                            f"indices{i}_stride[{j}]," for j in range(index_rank)
-                        ]
+                        args += [f"indices{i}_stride[{j}]," for j in range(index_rank)]
                     args += ["BLOCK_SIZE1=_RC_B1,"]
                     args += ["num_warps=8,"]
                     code.writelines(args)
@@ -298,17 +296,14 @@ def generate_index_wrapper(
         # - BLOCK_SIZE0 is only enlarged beyond the above when the M grid
         #   (incl. y_rounds folding) approaches the hardware limit 65535, to
         #   avoid launch failure on huge gather volumes.
-        code.writeline(
-            "_BLOCK_SIZE1 = min(triton.next_power_of_2(max(N, 1)), 2048)"
-        )
+        code.writeline("_BLOCK_SIZE1 = min(triton.next_power_of_2(max(N, 1)), 2048)")
         code.writeline("_y_rounds = triton.cdiv(triton.cdiv(N, _BLOCK_SIZE1), 255)")
         code.writeline(
             "_BLOCK_SIZE0 = max(8, min(triton.next_power_of_2("
             "triton.cdiv(M, 128)), 512))"
         )
         code.writeline(
-            "_BLOCK_SIZE0 = min(_BLOCK_SIZE0, "
-            "16384 // max(_BLOCK_SIZE1, 1))"
+            "_BLOCK_SIZE0 = min(_BLOCK_SIZE0, " "16384 // max(_BLOCK_SIZE1, 1))"
         )
         code.writeline(
             "_BLOCK_SIZE0 = max(_BLOCK_SIZE0, triton.next_power_of_2("

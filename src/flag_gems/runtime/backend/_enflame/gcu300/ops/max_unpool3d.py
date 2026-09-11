@@ -116,7 +116,7 @@ def max_unpool3d(
     logger.debug("GEMS_ENFLAME MAX_UNPOOL3D")
     input = input.contiguous()
     indices = indices.contiguous()
-    
+
     # gcu300 don't support int64
     indices = indices.to(torch.int32) if indices.dtype == torch.int64 else indices
 

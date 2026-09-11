@@ -19,16 +19,16 @@ __all__ = []
 if arch_version == 300:
     from .gcu300.concat_and_cache_mla import concat_and_cache_mla  # noqa: F401
     from .gcu300.cross_entropy_loss import cross_entropy_loss
-    from .gcu300.FLA import (
+    from .gcu300.FLA import (  # noqa: F401
         chunk_gated_delta_rule_fwd,
         fused_recurrent_gated_delta_rule_fwd,
     )
     from .gcu300.flash_mla import flash_mla
     from .gcu300.fused_add_rms_norm import fused_add_rms_norm
-    from .gcu300.fused_deepseek_v4_qnorm_rope_kv_rope_insert import (
+    from .gcu300.fused_deepseek_v4_qnorm_rope_kv_rope_insert import (  # noqa: F401
         fused_deepseek_v4_qnorm_rope_kv_rope_insert,
     )
-    from .gcu300.fused_moe import (
+    from .gcu300.fused_moe import (  # noqa: F401
         dispatch_fused_moe_kernel,
         fused_experts_impl,
         inplace_fused_experts,

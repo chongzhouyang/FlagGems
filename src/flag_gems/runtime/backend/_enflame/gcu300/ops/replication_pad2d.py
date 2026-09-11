@@ -144,9 +144,7 @@ def _launch_replication_pad2d_kernel(
     BLOCK_SIZE = 1024
     # GCU grid.x hardware limit: grow BLOCK_SIZE so the grid fits.
     if triton.cdiv(total_elems, BLOCK_SIZE) > _GCU_GRID_X_LIMIT:
-        BLOCK_SIZE = triton.next_power_of_2(
-            triton.cdiv(total_elems, _GCU_GRID_X_LIMIT)
-        )
+        BLOCK_SIZE = triton.next_power_of_2(triton.cdiv(total_elems, _GCU_GRID_X_LIMIT))
     grid = (triton.cdiv(total_elems, BLOCK_SIZE),)
 
     replication_pad2d_kernel[grid](

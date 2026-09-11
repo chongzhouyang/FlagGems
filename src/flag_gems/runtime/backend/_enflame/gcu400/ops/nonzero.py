@@ -18,7 +18,6 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as ext
@@ -530,26 +529,53 @@ def nonzero(inp, *, as_tuple=False):
                 d1 = inp.shape[1]
                 if (d1 & (d1 - 1)) == 0:
                     nonzero_small_kernel_2d_pow2[(1,)](
-                        inp_i32, out, total, n_elements,
-                        d1.bit_length() - 1, d1 - 1, block, num_warps=4,
+                        inp_i32,
+                        out,
+                        total,
+                        n_elements,
+                        d1.bit_length() - 1,
+                        d1 - 1,
+                        block,
+                        num_warps=4,
                     )
                 else:
                     nonzero_small_kernel_2d_fp[(1,)](
-                        inp_i32, out, total, n_elements,
-                        inp.shape[0], d1, 1.0 / d1, block, num_warps=4,
+                        inp_i32,
+                        out,
+                        total,
+                        n_elements,
+                        inp.shape[0],
+                        d1,
+                        1.0 / d1,
+                        block,
+                        num_warps=4,
                     )
             elif is_3d:
                 d1, d2 = inp.shape[1], inp.shape[2]
                 if ((d1 & (d1 - 1)) == 0) and ((d2 & (d2 - 1)) == 0):
                     nonzero_small_kernel_3d_pow2[(1,)](
-                        inp_i32, out, total, n_elements,
-                        d1.bit_length() - 1, d1 - 1, d2.bit_length() - 1, d2 - 1,
-                        block, num_warps=4,
+                        inp_i32,
+                        out,
+                        total,
+                        n_elements,
+                        d1.bit_length() - 1,
+                        d1 - 1,
+                        d2.bit_length() - 1,
+                        d2 - 1,
+                        block,
+                        num_warps=4,
                     )
                 else:
                     nonzero_small_kernel_3d[(1,)](
-                        inp_i32, out, total, n_elements,
-                        inp.shape[0], d1, d2, block, num_warps=4,
+                        inp_i32,
+                        out,
+                        total,
+                        n_elements,
+                        inp.shape[0],
+                        d1,
+                        d2,
+                        block,
+                        num_warps=4,
                     )
             else:
                 nonzero_small_kernel[(1,)](
@@ -572,8 +598,12 @@ def nonzero(inp, *, as_tuple=False):
             counts = torch.empty(n_blocks, dtype=torch.int32, device=inp.device)
             offsets = torch.empty(n_blocks, dtype=torch.int32, device=inp.device)
             grid = (n_blocks,)
-            nonzero_count_kernel[grid](inp_view, inp_i32, counts, n_elements, block, num_warps=num_warps)
-            nonzero_block_offset_kernel[(1,)](counts, offsets, n_blocks, triton.next_power_of_2(n_blocks), num_warps=1)
+            nonzero_count_kernel[grid](
+                inp_view, inp_i32, counts, n_elements, block, num_warps=num_warps
+            )
+            nonzero_block_offset_kernel[(1,)](
+                counts, offsets, n_blocks, triton.next_power_of_2(n_blocks), num_warps=1
+            )
             if is_1d:
                 nonzero_compact_kernel_1d[grid](
                     inp_i32, offsets, out, n_elements, block, num_warps=num_warps
@@ -582,36 +612,77 @@ def nonzero(inp, *, as_tuple=False):
                 d1 = inp.shape[1]
                 if (d1 & (d1 - 1)) == 0:
                     nonzero_compact_kernel_2d_pow2[grid](
-                        inp_i32, offsets, out, n_elements,
-                        d1.bit_length() - 1, d1 - 1, block, num_warps=num_warps,
+                        inp_i32,
+                        offsets,
+                        out,
+                        n_elements,
+                        d1.bit_length() - 1,
+                        d1 - 1,
+                        block,
+                        num_warps=num_warps,
                     )
                 else:
                     if n_elements < (1 << 24):
                         # f32 倒数近似除法(仅当元素数 < 2^24 保证 f32 精确)
                         nonzero_compact_kernel_2d_fp[grid](
-                            inp_i32, offsets, out, n_elements,
-                            inp.shape[0], d1, 1.0 / d1, block, num_warps=num_warps,
+                            inp_i32,
+                            offsets,
+                            out,
+                            n_elements,
+                            inp.shape[0],
+                            d1,
+                            1.0 / d1,
+                            block,
+                            num_warps=num_warps,
                         )
                     else:
                         nonzero_compact_kernel_2d[grid](
-                            inp_i32, offsets, out, n_elements, inp.shape[0], d1, block, num_warps=num_warps
+                            inp_i32,
+                            offsets,
+                            out,
+                            n_elements,
+                            inp.shape[0],
+                            d1,
+                            block,
+                            num_warps=num_warps,
                         )
             elif is_3d:
                 d1, d2 = inp.shape[1], inp.shape[2]
                 if ((d1 & (d1 - 1)) == 0) and ((d2 & (d2 - 1)) == 0):
                     nonzero_compact_kernel_3d_pow2[grid](
-                        inp_i32, offsets, out, n_elements,
-                        d1.bit_length() - 1, d1 - 1, d2.bit_length() - 1, d2 - 1,
-                        block, num_warps=num_warps,
+                        inp_i32,
+                        offsets,
+                        out,
+                        n_elements,
+                        d1.bit_length() - 1,
+                        d1 - 1,
+                        d2.bit_length() - 1,
+                        d2 - 1,
+                        block,
+                        num_warps=num_warps,
                     )
                 else:
                     nonzero_compact_kernel_3d[grid](
-                        inp_i32, offsets, out, n_elements,
-                        inp.shape[0], d1, d2, block, num_warps=num_warps,
+                        inp_i32,
+                        offsets,
+                        out,
+                        n_elements,
+                        inp.shape[0],
+                        d1,
+                        d2,
+                        block,
+                        num_warps=num_warps,
                     )
             else:
                 nonzero_compact_kernel[grid](
-                    inp_i32, offsets, out, n_elements, shape, inp_ndim, block, num_warps=num_warps
+                    inp_i32,
+                    offsets,
+                    out,
+                    n_elements,
+                    shape,
+                    inp_ndim,
+                    block,
+                    num_warps=num_warps,
                 )
             num_nonzeros = int((offsets[n_blocks - 1] + counts[n_blocks - 1]).item())
 

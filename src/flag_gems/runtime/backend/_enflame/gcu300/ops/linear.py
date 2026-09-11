@@ -179,8 +179,7 @@ def linear(input, weight, bias=None):
     # Launch kernel：把 (M, N) 的二维 tile 空间展平为单维 grid，
     # grid.y 恒为 1（GCU 限制 grid.y <= 255，N 可为 vocab 级大尺寸）。
     grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_SIZE_M"])
-        * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
     )
 
     with torch_device_fn.device(input.device):
