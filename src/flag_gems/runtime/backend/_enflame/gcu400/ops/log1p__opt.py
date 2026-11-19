@@ -1,75 +1,61 @@
-# Copyright 2026 FlagOS Contributors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""log1p 候选 v2：按 dtype / 元素量分档的 launch 配置（2026-11-16 性能轮）。
 
-"""log1p candidate v1: launch config tiered by dtype / element count.
+v1（11-02 TRACKED 扫描）把 `BLOCK=32768 / GRID=48 / num_warps=4 /
+NUM_STAGES=4` 写死并按 dtype 分化出 fp16/bf16 BS65536 nw2 ST1 与 fp32
+BS8192 nw4 ST4 两档。本轮（11-16，GCU400/Libra，官方 bench kernel 模式
+同口径 do_bench median w1000/r100）在 40+ 配置 × 6 变体函数体上做了
+消融阶梯与扫参，结论：
 
-Production `_launch` (11-02 TRACKED) hardcodes `BLOCK=32768 / GRID=48 /
-num_warps=4 / NUM_STAGES=4`. A 180-config constexpr sweep (bit-identical to production output)
-shows the optimum diverges by dtype:
+- **copy 地板**（同形态 flat gs-cap48 掩码 kernel，仅去 log）：fp32 2^24
+  48-51us（2.7-2.8TB/s）、2^29 1418us（3.03TB/s）≈ native log1p fp32
+  （50.9us / 1422us）——native fp32 已贴 1R1W 地板，该 dtype 的天花板
+  即 ~1.0×。
+- **fp32 中大形状 0.64-0.68× 的根因是编译器级**：`tl.log` 在 GCU backend
+  落到不透明 extern call `tops_log_v1_fp32(vector<128xf32>)`（llir 实
+  证），无法与 2× 宽的 fp32 load/store 流水重叠；BS8192/nw4/ST4 已是
+  (BS, ns, nw, grid, 函数体) 全空间的最优解（75.1us vs 地板 50.2us）。
+  grid 扩张（96/192/dense）、EVEN 免 mask、ns1-8 全档均无收益或劣化。
+- **函数体全空间否决**（fp32 2^24，对照 extern tl.log 75.1us）：
+  `fast_logf` extern 与 tl.log 逐 config 同价（同链复证）；`fast_log2f·ln2`
+  +12%；准确 `__ef_logf` extern 3.0×；`__ef_log1pf` extern 4.3×；
+  **纯 Triton 位分解 + D9 极小极大 Horner 多项式（fp32 模拟误差 5.96e-8）
+  10.6× 劣化**（801.9us）——backend 对 bitcast/where 多 op 元素链的中间
+  值物化病态（消融阶梯：纯位分解体 82.9us、Horner+select 体 119.9us、
+  去 select 体 130.9us、加 4 个特殊值 select 后 801.9us），lgamma Lanczos
+  纯体先例不适用于含 bitcast/select 的链。编译器问题已按 P 目录格式
+  归档（tops_log_v1_fp32 extern call 不可流水）。
+- **fp16/bf16 大形状**：n ≥ 2^26 起 BS131072 反超 BS65536（2^29: 785.7
+  vs 805.2us，+2.4%；2^26: 104.5 vs 107.0us；2^25 打平），分界取 2^26。
+- **小形状**（n ≤ 4096）：BS 减半到 `max(512, npo2(n//2))` 多 CTA 摊
+  launch 延迟（4096 元素：fp32 4.0→3.7us、fp16 3.4→3.3us，nw2/ST1）；
+  n ≤ 512 以下 grid=1 与更小 BS 打平。
 
-    fp16/bf16 medium shape (2^24) BS65536 G48 nw2 ST1 1.38x
-               large shape (2^29) BS65536 G48 nw2 ST1 1.21x
-    fp32 medium shape (2^24) BS8192 G48 nw4 ST4 1.31x
-               large shape (2^29) BS8192 G48 nw4 ST1 1.26x
-    small shape (4096) shrinking BLOCK to npo2(n) saves microsecond waste (1.5~2.1x)
+host 侧 dtype promotion / 非连续 / 空张量语义与生产 `log1p()` 逐字同构。
+2026-11-16 晚轮起 `_config` 分档表单源化到生产 `log1p.py`（本文件 import 复
+用），`log1p_` / `log1p_out` 的 `_launch` 同步套用同一分档——inplace/out
+与 functional 共用上述 (BS, grid, nw, ns) 全套证据链；inplace 大形状此前
+停在 TRACKED 旧配置 BS16384/nw4/ST4（官方 bench core 15 cell 平均仅
+0.70×，fp32 2^29 0.46×），套用后与 functional 同档。
 
-`NUM_STAGES` matters noticeably for fp16/bf16 large shapes (ST1 1.21x vs ST4 1.11x),
-but is nearly irrelevant for fp32 (2.411 vs 2.414), so fp32 keeps production ST4.
-
-Implementation: reuse production `log1p_kernel`'s original JITFunction
-(`LibEntry.fn`), passing constexpr explicitly in the per-operator host dispatch;
-**TRACKED log1p.py is not modified**, `log1p_` / `log1p_out` are untouched,
-and global config is unchanged. Host-side dtype promotion / non-contiguous / empty-tensor semantics
-are word-for-word isomorphic to production `log1p()`.
-
-Probe pitfall: `torch.randn()+2.0` still produces x<-1 and NaN from log1p,
-and `torch.equal` is always False for NaN, so every config would be misjudged as invalid;
-sweeps / gates must use all-positive inputs.
+注意探针踩坑：`torch.randn()+2.0` 仍会产出 x<-1 使 log1p 得 NaN，
+而 `torch.equal` 对 NaN 恒 False，会让全部配置误判为不合格；
+扫描/门禁必须用全正输入。
 """
 
-import logging
-
 import torch
-import triton
 
 from flag_gems.runtime import torch_device_fn
+from flag_gems.runtime.backend._enflame.gcu400.ops.log1p import _config
 from flag_gems.runtime.backend._enflame.gcu400.ops.log1p import (
     log1p_kernel as _kernel_wrapped,
 )
-
-logger = logging.getLogger(__name__)
-
 
 _K = _kernel_wrapped.fn
 
 __all__ = ["log1p"]
 
 
-def _config(n, dtype):
-    """Return (BLOCK_SIZE, GRID_SIZE, num_warps, NUM_STAGES)."""
-    if dtype == torch.float32:
-        BS, G, nw, ST = 8192, 48, 4, 4
-    else:
-        BS, G, nw, ST = 65536, 48, 2, 1
-    if n < BS:
-        BS = max(1024, triton.next_power_of_2(n))
-    num_tile = triton.cdiv(n, BS)
-    return BS, min(G, num_tile), nw, ST
-
-
 def log1p(x: torch.Tensor):
-    logger.debug("GEMS_ENFLAME_GCU400 LOG1P")
     if x.is_floating_point():
         result_dtype = x.dtype
     else:

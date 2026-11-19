@@ -63,6 +63,16 @@ _Q_TO_INT = {
 
 # Number of elements each program copies along a dense/linear span.
 _BLOCK = 16384
+# GCU400 dense-copy tuning results (from the 1-byte-element viewpoint):
+# Time is roughly proportional to the program count (~60ns fixed overhead per program), and per-thread
+# memory-access width determines effective bandwidth. So the dense span switched to "int64/int32 wide view + fixed
+# grid + an in-program loop moving 64KB": 16M bytes improved from 506 GB/s to about
+# 1900 GB/s (ATen clone roofline about 2000 GB/s).
+_COPY_CHUNK_BYTES = 65536
+_COPY_MAX_PROGRAMS = 48
+# Spans smaller than that byte count go straight to the flat kernel; the wide-view benefit does not offset the extra
+# metadata overhead.
+_COPY_WIDE_MIN_BYTES = 4096
 # Small program used for the unaligned head of a split span.
 _HEAD_BLOCK = 32
 # Longest rank the generic (strided) kernel decomposes in one unrolled pass.
@@ -80,6 +90,42 @@ def _int_repr_flat_kernel(in_ptr, out_ptr, numel, BLOCK: tl.constexpr):
     mask = offs < numel
     val = tl.load(in_ptr + offs, mask=mask)
     tl.store(out_ptr + offs, val, mask=mask)
+
+
+@triton.jit
+def _int_repr_wide_copy_kernel(
+    in_ptr,
+    out_ptr,
+    count,
+    tail_in_ptr,
+    tail_out_ptr,
+    tail_count,
+    BLOCK: tl.constexpr,
+    NUM_CHUNKS: tl.constexpr,
+):
+    """固定 grid 的宽元素拷贝。
+
+    每个 program 先把 chunk 内的 ``BLOCK`` 个宽元素（int32/int64）拷走，
+    再按 ``grid * BLOCK`` 的步长推进 ``NUM_CHUNKS`` 轮。相比「一个
+    program 只搬一小段」的展开方式，这样把 program 数量压到 48 以内，
+    program 启动开销被摊薄，每线程访存宽度由宽视图保证。
+
+    ``numel`` 不足一个宽元素的尾巴（< 8 字节）交给 0 号 program 用字节
+    拷贝兜底，避免为几个字节再发一次 kernel。
+    """
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    step = tl.num_programs(0) * BLOCK
+    for _ in range(NUM_CHUNKS):
+        mask = offs < count
+        val = tl.load(in_ptr + offs, mask=mask)
+        tl.store(out_ptr + offs, val, mask=mask)
+        offs += step
+
+    if tl.program_id(0) == 0:
+        residual = tl.arange(0, 8)
+        residual_mask = residual < tail_count
+        tail = tl.load(tail_in_ptr + residual, mask=residual_mask)
+        tl.store(tail_out_ptr + residual, tail, mask=residual_mask)
 
 
 @triton.jit
@@ -238,13 +284,72 @@ def _padded(n, seq, fill):
     return (fill,) * max(n - len(seq), 0) + tuple(int(v) for v in seq[-n:])
 
 
+def _floor_pow2(value):
+    """向下取整到 2 的幂（tile 尺寸必须是 2 的幂）。"""
+    result = 1
+    while result * 2 <= value:
+        result *= 2
+    return result
+
+
+def _wide_alias(tensor, dtype, count):
+    """把 ``tensor`` 的 storage 前 ``count`` 个 ``dtype`` 元素做成 rank-1 别名。
+
+    纯元数据操作（不搬运数据）。调用方需保证 storage 起始偏移已经按
+    ``dtype.itemsize`` 对齐，否则 base 不是整数下标。
+    """
+    base = tensor.storage_offset() * tensor.element_size()
+    alias = torch.empty(0, dtype=dtype, device=tensor.device)
+    alias.set_(tensor.untyped_storage(), base // dtype.itemsize, (count,), (1,))
+    return alias
+
+
+def _launch_dense_copy(in_view, out, numel):
+    """用最宽的对齐视图拷贝 ``numel`` 个元素；不可用时返回 False。
+
+    宽视图（int64 / int32）让每线程一次搬更多字节，配合固定 grid 摊薄
+    program 开销，dense span 的有效带宽可以接近 ATen 拷贝内核。只对
+    1 字节元素（quint8 / qint8）启用；qint32 的元素本身已有 4 字节宽，
+    且字节别名逻辑不通用，继续走 flat kernel。
+    """
+    if in_view.element_size() != 1 or out.element_size() != 1:
+        return False
+    if numel < _COPY_WIDE_MIN_BYTES:
+        return False
+    src_ptr = in_view.data_ptr()
+    dst_ptr = out.data_ptr()
+    for dtype in (torch.int64, torch.int32):
+        width = dtype.itemsize
+        if src_ptr % width or dst_ptr % width:
+            continue
+        count = numel // width
+        if count == 0:
+            continue
+        tail = numel - count * width
+        block = min(_COPY_CHUNK_BYTES // width, _floor_pow2(count))
+        programs = min(_COPY_MAX_PROGRAMS, triton.cdiv(count, block))
+        chunks = triton.cdiv(count, block * programs)
+        _int_repr_wide_copy_kernel[(programs,)](
+            _wide_alias(in_view, dtype, count),
+            _wide_alias(out, dtype, count),
+            count,
+            _linear_alias(in_view, torch.uint8, count * width),
+            _linear_alias(out, torch.uint8, count * width),
+            tail,
+            BLOCK=block,
+            NUM_CHUNKS=chunks,
+        )
+        return True
+    return False
+
+
 def int_repr(self, out=None):
     """Return the raw integer codes of the affine-quantized tensor ``self``.
 
     Implements both ``aten::int_repr(Tensor self) -> Tensor`` and
     ``aten::int_repr.out(Tensor self, *, Tensor(a!) out) -> Tensor(a!)``.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 INT_REPR")
+    logger.debug("GEMS_ENFLAME INT_REPR")
     if not isinstance(self, torch.Tensor):
         raise TypeError(
             "int_repr(): argument 'self' must be a Tensor, not "
@@ -293,9 +398,10 @@ def int_repr(self, out=None):
         base = self.storage_offset()
         misalign = (base * out.element_size()) % _ALIGN_BYTES
         if misalign == 0 or numel < _SPLIT_MIN_ELEMS:
-            _int_repr_flat_kernel[(triton.cdiv(numel, _BLOCK),)](
-                in_view, out, numel, BLOCK=_BLOCK
-            )
+            if not _launch_dense_copy(in_view, out, numel):
+                _int_repr_flat_kernel[(triton.cdiv(numel, _BLOCK),)](
+                    in_view, out, numel, BLOCK=_BLOCK
+                )
         else:
             itemsize = out.element_size()
             head = min(numel, (_ALIGN_BYTES - misalign) // itemsize)
@@ -306,12 +412,15 @@ def int_repr(self, out=None):
             if bulk:
                 # Shifted aliases keep the bulk base 16-byte aligned while the
                 # kernel address expression remains base + arange.
-                _int_repr_flat_kernel[(bulk // _BLOCK,)](
-                    _linear_alias(in_view, out_dtype, head),
-                    _linear_alias(out, out_dtype, head),
-                    bulk,
-                    BLOCK=_BLOCK,
-                )
+                bulk_in = _linear_alias(in_view, out_dtype, head)
+                bulk_out = _linear_alias(out, out_dtype, head)
+                if not _launch_dense_copy(bulk_in, bulk_out, bulk):
+                    _int_repr_flat_kernel[(bulk // _BLOCK,)](
+                        bulk_in,
+                        bulk_out,
+                        bulk,
+                        BLOCK=_BLOCK,
+                    )
             if rest - bulk:
                 _int_repr_flat_kernel[(1,)](
                     _linear_alias(in_view, out_dtype, head + bulk),

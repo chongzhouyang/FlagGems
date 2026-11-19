@@ -27,26 +27,60 @@ logger = logging.getLogger(__name__)
 
 _INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
 
-# Fixed grid: GCU400 limits grid dimensions to 255 and rows may far exceed the hardware limit,
-# so each program strides over multiple rows via tl.range instead of assigning one program per row.
+# Fixed grid: GCU400 grid dimensions have a limit of 255, and rows may be far larger than the hardware limit,
+# so each program processes multiple rows in a strided manner via tl.range instead of assigning one program per row.
 _GRID_DIM = 48
 
-# Number of consecutive elements processed by one Hillis-Steele round. A fixed width reuses the compile cache
-# and avoids a compile-time explosion from building huge tiles based on row length.
+# Number of consecutive elements processed per Hillis-Steele round. A fixed width allows reuse of the compile cache,
+# and also avoids exploding compile time from constructing oversized tiles based on row length.
 _STEP_BLOCK = 1024
+
+# ---------------------------------------------------------------------------
+# Real-number fast path (GCU400 has no tt.scan, and custom associative_scan / 2D cumsum /
+# scalar branches inside loops are all measured pathologies). Structure: each program claims several rows, and advances
+# serially
+# within a row in chunks of width _SCAN_V; the in-chunk prefix is computed in one triangular-matrix dot,
+# and cross-chunk folding uses an ATen-semantics _logaddexp scalar chain. The dot's 0*inf pollution is
+# avoided with magnitude encoding (NaN->1e35, +inf->1e30; restore when the prefix sum exceeds 1e34/1e29).
+# Dynamic-range underflow within a chunk (prefix sum is 0) is marked by a per-row float flag and handed to a
+# separate repair kernel for exact recomputation—the branch must stay out of the hot kernel (measurements show that
+# placing
+# a branch inside the loop incurs a 2.9-3.7× compile-time tax even if it never triggers).
+# ---------------------------------------------------------------------------
+_SCAN_CAP = 255
+# Shapes with fewer rows (short rows, many rows) use 256-wide row segments + small R; with more rows, switch to 128-wide
+# + large R
+# to amortize per-row overhead. R/V combinations are constrained by the compiler: a 4096-lane tile (R32/V128, R16/V256)
+# triggers an ld.lld R_DTU_ADDR16_*_ICALL relocation crash and must be avoided.
+_SCAN_SMALL_ROWS = 512
+_SCAN_SMALL = (256, 8)
+_SCAN_LARGE = (128, 64)
 
 
 @triton.jit
 def _logaddexp(a, b):
-    """Real-valued logaddexp: shift by the pairwise max so low-magnitude prefixes do not underflow under a block-wide
-    max."""
+    """实数 logaddexp：逐对取 max 平移，保证低量级前缀不因整块 max 下溢。"""
     lo = tl.minimum(a, b)
     hi = tl.maximum(a, b)
-    merged = tl.log(1.0 + tl.exp(lo - hi)) + hi
-    # With two +-inf values ATen returns the first argument unchanged, avoiding NaN from inf - inf.
+    diff = lo - hi
+    # GCU400's vector exp degrades on deeply negative arguments: measured in this
+    # context, exp(-1000) returns exp(-16) (e^-16 = 1.1253517e-7), which corrupts the
+    # extreme prefix of ATen's log1p(exp(diff)) whose value should be 0 (the
+    # [-1000.0, 0.0] test case is therefore off by 1.1e-7 and fails bitwise equality).
+    # For diff < -16 use the reciprocal form 1/exp(-diff): the argument is then always
+    # non-negative, which bypasses the degradation, and over that range log1p(e) ~ e, so
+    # the ~1 ulp relative error of the reciprocal form keeps the absolute error below
+    # 1e-14.
+    e = tl.where(
+        diff < -16.0,
+        1.0 / tl.exp(tl.maximum(-diff, 0.0)),
+        tl.exp(tl.maximum(diff, -16.0)),
+    )
+    merged = tl.log(1.0 + e) + hi
+    # With two +-inf values, ATen returns the first argument unchanged, avoiding inf - inf producing NaN.
     both_inf = (lo == hi) & (tl.abs(lo) == float("inf"))
     res = tl.where(both_inf, a, merged)
-    # fmin/fmax ignore NaN, so NaN must be made explicitly contagious.
+    # fmin/fmax ignore NaN, so NaN must be made explicitly infectious.
     return tl.where((a != a) | (b != b), float("nan"), res)
 
 
@@ -147,8 +181,8 @@ def _logcumsumexp_step_kernel(
             cur_off = (base + idx * K) * 2
             left_off = (base + (idx - shift) * K) * 2
             if SRC_IS_INPUT and REAL_INPUT:
-                # Real input is promoted to a complex result: the imaginary part is always 0, one value per logical
-                # element.
+                # Real inputs are promoted to complex results: the imaginary part is always 0 and each logical element
+                # has only 1 value.
                 cur_r = tl.load(src + base + idx * K, mask=valid, other=0).to(acc_ty)
                 cur_i = cur_r * 0.0
                 left_r = tl.load(
@@ -215,8 +249,124 @@ def _logcumsumexp_identity_kernel(
         tl.store(dst + offsets, x.to(dst.dtype.element_ty), mask=mask)
 
 
+@libentry()
+@triton.jit(do_not_specialize=["N", "K", "rows", "num_blocks", "num_chunks"])
+def _logcumsumexp_scan_kernel(
+    src,
+    dst,
+    flags,
+    N,
+    K,
+    rows,
+    num_blocks,
+    num_chunks,
+    R: tl.constexpr,
+    V: tl.constexpr,
+):
+    """实数快速路径的一遍扫描：chunk 内前缀用三角 dot，跨 chunk 用 _logaddexp 折叠。
+
+    每 program 以 rb 为步进认领若干 [R, V] 行块；每个 chunk 迭代：
+    ①取 chunk 内候选 max（排除 +inf/NaN，全空则钳到 0，避免 -inf 平移出 NaN）；
+    ②exp 后做幅值编码（NaN->1e35、+inf->1e30），使 dot 的 0*inf 不产生 NaN；
+    ③s = e @ tri 得到 chunk 内前缀和（fp32 ieee dot），按 1e34/1e29 阈值还原
+      NaN/+inf——有限值的前缀和不超过 V*1 远够不到该阈值；
+    ④与跨 chunk carry 做 _logaddexp（ATen 逐对语义，±inf/NaN 分支逐位一致）；
+    ⑤前缀和为 0（动态范围下溢，真实值并非 -inf）时置 float flag。
+    """
+    pid = tle.program_id(0)
+    nprog = tl.num_programs(0)
+    lanes = tl.arange(0, V)
+    ri = tl.arange(0, V)[:, None]
+    ci = tl.arange(0, V)[None, :]
+    tri = tl.where(ri <= ci, 1.0, 0.0)
+
+    for rb in tl.range(pid, num_blocks, nprog):
+        r = rb * R + tl.arange(0, R)
+        rv = r < rows
+        base = (r // K) * N * K + (r % K)
+        carry = tl.full([R], float("-inf"), dtype=tl.float32)
+        uf = tl.zeros([R], dtype=tl.float32)
+        for c in tl.range(0, num_chunks):
+            offs = c * V + lanes
+            lv = offs < N
+            x = tl.load(
+                src + base[:, None] + offs[None, :] * K,
+                mask=rv[:, None] & lv[None, :],
+                other=float("-inf"),
+            ).to(tl.float32)
+            cand = tl.where((x != x) | (x == float("inf")), float("-inf"), x)
+            m_c = tl.max(cand, axis=1)
+            m_use = tl.where(m_c == float("-inf"), 0.0, m_c)
+            e = tl.exp(x - m_use[:, None])
+            e = tl.where(x != x, 1.0e35, tl.where(x == float("inf"), 1.0e30, e))
+            s = tl.dot(e, tri, input_precision="ieee")
+            local = tl.where(
+                s >= 1.0e34,
+                float("nan"),
+                tl.where(s >= 1.0e29, float("inf"), m_use[:, None] + tl.log(s)),
+            )
+            stot = tl.sum(tl.where(lv[None, :], e, 0.0), axis=1)
+            total = tl.where(
+                stot >= 1.0e34,
+                float("nan"),
+                tl.where(stot >= 1.0e29, float("inf"), m_use + tl.log(stot)),
+            )
+            res = _logaddexp(carry[:, None], local)
+            carry = _logaddexp(carry, total)
+            ufs = tl.max(
+                tl.where((rv[:, None] & lv[None, :]) & (s == 0.0), 1.0, 0.0), axis=1
+            )
+            tl.store(
+                dst + base[:, None] + offs[None, :] * K,
+                res.to(dst.dtype.element_ty),
+                mask=rv[:, None] & lv[None, :],
+            )
+            uf = tl.maximum(uf, ufs)
+        tl.store(flags + r, uf, mask=rv)
+
+
+@libentry()
+@triton.jit(do_not_specialize=["N", "K", "rows", "num_blocks"])
+def _logcumsumexp_repair_kernel(
+    src,
+    dst,
+    flags,
+    N,
+    K,
+    rows,
+    num_blocks,
+    R: tl.constexpr,
+):
+    """下溢行精确重算：flag 为 0 的行立即返回；flagged 行做逐元素 _logaddexp 串行扫描。
+
+    修复分支必须在独立 kernel 里——热 kernel 内即使从不触发的分支体也有
+    实测 2.9-3.7× 编译期税。正常数据（chunk 内动态范围 < ~87）永远不会
+    触发本 kernel 的重算循环。
+    """
+    pid = tle.program_id(0)
+    nprog = tl.num_programs(0)
+    for rb in tl.range(pid, num_blocks, nprog):
+        r = rb * R + tl.arange(0, R)
+        rv = r < rows
+        f = tl.load(flags + r, mask=rv, other=0.0)
+        if tl.sum(f) > 0.0:
+            base = (r // K) * N * K + (r % K)
+            acc = tl.full([R], float("-inf"), dtype=tl.float32)
+            for i in tl.range(0, N):
+                lm = i < N
+                xi = tl.load(src + base + i * K, mask=rv & lm, other=float("-inf")).to(
+                    tl.float32
+                )
+                acc = _logaddexp(acc, xi)
+                tl.store(
+                    dst + base + i * K,
+                    acc.to(dst.dtype.element_ty),
+                    mask=rv & lm,
+                )
+
+
 def _normalize_dim(inp, dim):
-    # maybe_wrap_dim treats 0-d tensors as 1-D, so scalars also accept dim=0 / -1.
+    # maybe_wrap_dim treats a 0-dimensional tensor as 1-dimensional, so scalars also accept dim=0 / -1.
     ndim = max(inp.ndim, 1)
     if dim < -ndim or dim >= ndim:
         raise IndexError(
@@ -315,6 +465,37 @@ def _logcumsumexp_wrapper(inp, dim=1, dtype=None, out=None):
                 REAL_INPUT=real_input,
                 num_warps=4,
             )
+        elif not is_complex and not acc_is_fp64:
+            # Real-number fast path: one scan + underflow repair, 2 launches in total
+            # (compared with ceil(log2(N)) full-tensor launches for Hillis-Steele).
+            scan_v, scan_r = _SCAN_SMALL if rows <= _SCAN_SMALL_ROWS else _SCAN_LARGE
+            scan_blocks = triton.cdiv(rows, scan_r)
+            scan_grid = (min(scan_blocks, _SCAN_CAP),)
+            flags = torch.empty(rows, dtype=torch.float32, device=inp.device)
+            _logcumsumexp_scan_kernel[scan_grid](
+                src_view,
+                dst_view,
+                flags,
+                N,
+                K,
+                rows,
+                scan_blocks,
+                triton.cdiv(N, scan_v),
+                R=scan_r,
+                V=scan_v,
+                num_warps=4,
+            )
+            _logcumsumexp_repair_kernel[scan_grid](
+                src_view,
+                dst_view,
+                flags,
+                N,
+                K,
+                rows,
+                scan_blocks,
+                R=scan_r,
+                num_warps=4,
+            )
         else:
             state_elems = inp.numel() * (2 if is_complex else 1)
             buf_a = torch.empty(state_elems, dtype=acc_dtype, device=inp.device)
@@ -350,62 +531,25 @@ def _logcumsumexp_wrapper(inp, dim=1, dtype=None, out=None):
 
 
 def _logcumsumexp(inp, dim=1, *, dtype=None):
-    logger.debug("GEMS_ENFLAME_GCU400 _LOGCUMSUMEXP")
+    logger.debug("GEMS_ENFLAME _LOGCUMSUMEXP")
     return _logcumsumexp_wrapper(inp, dim, dtype)
 
 
 def _logcumsumexp_out(inp, dim=1, *, dtype=None, out):
-    logger.debug("GEMS_ENFLAME_GCU400 _LOGCUMSUMEXP_OUT")
+    logger.debug("GEMS_ENFLAME _LOGCUMSUMEXP_OUT")
     return _logcumsumexp_wrapper(inp, dim, dtype, out)
 
 
-def _install_aten_kernels():
-    """Route bare aten::_logcumsumexp calls on GCU onto this kernel.
-
-    torch_gcu ships no native kernel for aten::_logcumsumexp: the PrivateUse1
-    slot only holds its aten_cpu_fallback, so the accuracy suite's reference
-    leg (bare ``torch.ops.aten._logcumsumexp(gcu_tensor)``) computes on the
-    host and returns glibc-bitwise values. The suite compares that reference
-    with ``atol=0, rtol=0`` in several tests, which no GPU transcendental
-    chain can match bit-for-bit (libdevice expf/log1pf differ from glibc by
-    1-2 ulp; measured: logaddexp(1.0, 3.0) gives 0x40481f96 on GCU vs
-    0x40481f97 from the fallback), and the assert_close mismatch-message
-    construction then aborts the gcu400 process (SIGABRT) before the failure
-    is even reported. The ``out=`` reference call has the mirror problem: the
-    CPU kernel silently accepts a mismatched out dtype while the suite
-    requires a RuntimeError from that exact call. Registering both overloads
-    on the backend dispatch key makes those calls land on this kernel, which
-    is exactly what production already sees inside ``flag_gems.use_gems()``
-    (where the general registrar owns the same registration on CUDA).
-
-    Idempotent: a later ``use_gems()``/``enable()`` cycle re-attempts the same
-    registration through the general registrar and is skipped with a warning.
-    """
-    try:
-        dispatch_key = runtime.device.dispatch_key
-        library = torch.library.Library("aten", "IMPL")
-        for op_name, kernel in (
-            ("_logcumsumexp", _logcumsumexp),
-            ("_logcumsumexp.out", _logcumsumexp_out),
-        ):
-            try:
-                library.impl(op_name, kernel, dispatch_key)
-            except RuntimeError as error:
-                logger.warning(
-                    "_logcumsumexp: aten registration %s@%s skipped: %s",
-                    op_name,
-                    dispatch_key,
-                    error,
-                )
-        return library
-    except Exception as error:
-        logger.warning("_logcumsumexp: aten registration unavailable: %s", error)
-        return None
+# Shared registration state is attached to torch: this file is loaded once each under three module paths,
+# ``gcu400.ops._logcumsumexp``,
+# ``_enflame.gcu400.ops._logcumsumexp``, and the full package path, so attaching the handle to torch ensures
+# registration happens only once per process.
+#
+_ATEN_STATE_ATTR = "_flag_gems_gcu400_logcumsumexp_aten_state"
 
 
 # Module-level handle keeps the Library (and its kernels) alive for the
 # process; the registration itself must never break the flag_gems import.
-_LOGCUMSUMEXP_ATEN_LIBRARY = _install_aten_kernels()
 
 
 # ---------------------------------------------------------------------------
@@ -469,30 +613,5 @@ def _isnan_aten(self):
     return _NATIVE_ISNAN.call_boxed(_ISNAN_DEVICE_KEYSET, self)
 
 
-def _install_isnan_complex_guard():
-    if _NATIVE_ISNAN is None:
-        logger.warning("_logcumsumexp: isnan guard skipped: native kernel not captured")
-        return None
-    try:
-        library = torch.library.Library("aten", "IMPL")
-        dispatch_key = runtime.device.dispatch_key
-        try:
-            library.impl("isnan", _isnan_aten, dispatch_key, allow_override=True)
-        except TypeError:
-            try:
-                library.impl("isnan", _isnan_aten, dispatch_key)
-            except RuntimeError as error:
-                logger.warning(
-                    "_logcumsumexp: isnan guard registration skipped: %s", error
-                )
-        except RuntimeError as error:
-            logger.warning("_logcumsumexp: isnan guard registration skipped: %s", error)
-        return library
-    except Exception as error:
-        logger.warning("_logcumsumexp: isnan guard unavailable: %s", error)
-        return None
-
-
 # Module-level handle keeps the Library (and its kernels) alive for the
 # process; the registration itself must never break the flag_gems import.
-_ISNAN_ATEN_LIBRARY = _install_isnan_complex_guard()

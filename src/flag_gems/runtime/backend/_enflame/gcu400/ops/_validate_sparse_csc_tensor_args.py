@@ -43,6 +43,7 @@ def _check_indices_kernel(
     cs,
     ps,
     total_segments,
+    bad_ptr,
     BSHAPE: tl.constexpr,
     CSTRIDES: tl.constexpr,
     PSTRIDES: tl.constexpr,
@@ -87,12 +88,12 @@ def _check_indices_kernel(
             )
             bad |= mask & ((val < 0) | (val >= dim) | (predecessor & (prev >= val)))
         bad_any = tl.maximum(bad_any, tl.max(bad.to(tl.int32), 0))
-    # Always launched with debug=True: this is the actual error path, not an
-    # unused verdict written to scratch memory. Like ATen CUDA, it is async.
-    tl.device_assert(
-        bad_any == 0,
-        "invalid sparse compressed indices: bounds, endpoints, or sorted distinct entries",
-    )
+    # Publish the verdict to a per-program slot instead of raising a device
+    # assertion.  On GCU400 a SIP assertion aborts the whole process (it cannot
+    # be turned into a catchable RuntimeError) and additionally hangs when the
+    # caller disabled core dumps (RLIMIT_CORE=0, as tests do for child
+    # processes), so the host raises after reading these slots back.
+    tl.store(bad_ptr + program, bad_any)
 
 
 def _check_indices(is_crow, compressed_idx, plain_idx, cdim, dim, nnz):
@@ -140,8 +141,12 @@ def _check_indices(is_crow, compressed_idx, plain_idx, cdim, dim, nnz):
         count *= extent
     total_segments = max(cdim, 1) * count
     if total_segments:
+        grid = min(_NUM_PROGRAMS, total_segments)
+        # One int32 verdict slot per program; every program stores its slot, so
+        # no device-side initialisation kernel is needed.
+        verdict = torch.empty(grid, dtype=torch.int32, device=compressed_idx.device)
         with torch_device_fn.device(compressed_idx.device):
-            _check_indices_kernel[(min(_NUM_PROGRAMS, total_segments),)](
+            _check_indices_kernel[(grid,)](
                 compressed_idx,
                 plain_idx,
                 cdim,
@@ -150,13 +155,19 @@ def _check_indices(is_crow, compressed_idx, plain_idx, cdim, dim, nnz):
                 compressed_idx.stride(-1),
                 plain_idx.stride(-1),
                 total_segments,
+                verdict,
                 BSHAPE=tuple(batch_shape),
                 CSTRIDES=compressed_idx.stride()[:-1],
                 PSTRIDES=plain_idx.stride()[:-1],
                 BLOCK=_BLOCK,
                 NUM_PROGRAMS=_NUM_PROGRAMS,
                 num_warps=_NUM_WARPS,
-                debug=True,
+            )
+        # Single device-to-host read supplies the verdict; invalid indices are
+        # reported as a normal RuntimeError so callers can catch them.
+        if max(verdict.tolist()):
+            raise RuntimeError(
+                "invalid sparse compressed indices: bounds, endpoints, or sorted distinct entries"
             )
 
 
@@ -256,7 +267,7 @@ def _validate_metadata(
 def _validate_sparse_csc_tensor_args(
     ccol_indices, row_indices, values, size, check_pinning=None
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 _VALIDATE_SPARSE_CSC_TENSOR_ARGS")
+    logger.debug("GEMS_ENFLAME _VALIDATE_SPARSE_CSC_TENSOR_ARGS")
     return _validate_metadata(
         ccol_indices, row_indices, values, size, torch.sparse_csc, check_pinning
     )

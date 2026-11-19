@@ -64,7 +64,7 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems import runtime
+from flag_gems import runtime  # noqa: F401
 from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
@@ -353,7 +353,7 @@ def _causal1122(dense):
 
 
 def _sparse_semi_structured_tile(input, algorithm: str = "", use_cutlass: bool = True):
-    logger.debug("GEMS_ENFLAME_GCU400 SPARSE_SEMI_STRUCTURED_TILE")
+    logger.debug("GEMS_ENFLAME SPARSE_SEMI_STRUCTURED_TILE")
 
     dense = input
     if dense.dim() != 2:
@@ -442,50 +442,5 @@ def _sparse_semi_structured_tile(input, algorithm: str = "", use_cutlass: bool =
     return (packed, meta, packed_t, meta_t, masks)
 
 
-def _install_aten_kernels():
-    """Route bare aten::_sparse_semi_structured_tile calls on GCU onto this kernel.
-
-    The upstream op is CUDA-only and torch_gcu ships no PrivateUse1 kernel
-    for it, so a bare ``torch.ops.aten._sparse_semi_structured_tile(...)``
-    call -- the accuracy suite's reference leg and the benchmark's
-    native-baseline leg -- is bounced to CPU by the aten_cpu_fallback and
-    dies with ``NotImplementedError``.  Registering the op on the backend
-    dispatch key here makes those calls land on this kernel, which is
-    exactly what production already sees inside ``flag_gems.use_gems()``.
-
-    The backend loader executes this file under several module names; the
-    torch-attached flag short-circuits the second and later executions, so
-    they neither re-register nor emit "This is not allowed" warnings.
-    """
-    existing = getattr(
-        torch, "_flaggems_gcu_sparse_semi_structured_tile_aten_library", None
-    )
-    if existing is not None:
-        return existing
-    try:
-        dispatch_key = runtime.device.dispatch_key
-        library = torch.library.Library("aten", "IMPL")
-        try:
-            library.impl(
-                "_sparse_semi_structured_tile",
-                _sparse_semi_structured_tile,
-                dispatch_key,
-            )
-        except RuntimeError as error:
-            logger.warning(
-                "_sparse_semi_structured_tile: aten registration skipped: %s", error
-            )
-        setattr(
-            torch, "_flaggems_gcu_sparse_semi_structured_tile_aten_library", library
-        )
-        return library
-    except Exception as error:
-        logger.warning(
-            "_sparse_semi_structured_tile: aten registration unavailable: %s", error
-        )
-        return None
-
-
 # Module-level handle keeps the Library (and its kernel) alive for the
 # process; the registration itself must never break the flag_gems import.
-_SPARSE_SEMI_STRUCTURED_TILE_ATEN_LIBRARY = _install_aten_kernels()

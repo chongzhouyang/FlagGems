@@ -477,7 +477,7 @@ def _fused_launcher():
 def _thnn_fused_gru_cell_backward(
     grad_hy: torch.Tensor, workspace: torch.Tensor, has_bias: bool
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 _THNN_FUSED_GRU_CELL_BACKWARD")
+    logger.debug("GEMS_ENFLAME _THNN_FUSED_GRU_CELL_BACKWARD")
     _validate_inputs(grad_hy, workspace)
     batch_size, hidden_size = grad_hy.shape
     gate_shape = (batch_size, 3 * hidden_size)
@@ -545,7 +545,7 @@ def _thnn_fused_gru_cell_backward_out(
     out3: torch.Tensor,
     out4: torch.Tensor,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 _THNN_FUSED_GRU_CELL_BACKWARD_OUT")
+    logger.debug("GEMS_ENFLAME _THNN_FUSED_GRU_CELL_BACKWARD_OUT")
     _validate_inputs(grad_hy, workspace)
     if not has_bias:
         raise RuntimeError("the out overload requires has_bias=True")

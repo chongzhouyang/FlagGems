@@ -17,6 +17,7 @@ import logging
 import torch
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 
 from flag_gems.utils import tl_extra_shim
 from flag_gems.utils.shape_utils import MemOverlap, has_internal_overlapping
@@ -77,6 +78,27 @@ _QUANT_INFO = {
 #    has a working reference arm without editing any test.
 
 
+# Rounding implementation: ``float2int_rn`` on GCU is a single conversion instruction with RNE semantics, while
+# ``nearbyint``
+# goes through the libdevice slow path (16.7M fp32 -> int8: 0.47ms vs 0.26ms). Both are
+# round-half-to-even, so the former can be used for 8-bit targets: first pre-clamp with ±2^30 to bring the input into
+# int32's exactly-convertible domain; the 8-bit quantization range plus the zero-point offset is far below this bound,
+# so results landing in range will not
+# be changed by this clamp, and out-of-range values would be clamped to qmin / qmax anyway, hence bit-for-bit equivalent
+# (tested with random, exact .5 ties,
+# and ±1e30 / 3.5e9 extremes, three datasets, 0 mismatch). qint32 still uses ``nearbyint``.
+_F2I_MAX_QMAX = 65535
+
+
+@triton.jit
+def _round_half_even(scaled, RNE_F2I: tl.constexpr):
+    """按 round-half-to-even 取整（输入输出都是 fp32）。"""
+    if RNE_F2I:
+        safe = tl.minimum(tl.maximum(scaled, -1073741824.0), 1073741824.0)
+        return libdevice.float2int_rn(safe).to(tl.float32)
+    return tl_extra_shim.nearbyint(scaled)
+
+
 @triton.jit
 def quantize_per_tensor_kernel(
     x_ptr,
@@ -87,6 +109,9 @@ def quantize_per_tensor_kernel(
     qmax: tl.constexpr,
     n_elements,
     ALIGNED: tl.constexpr,
+    RNE_F2I: tl.constexpr,
+    QMIN_I: tl.constexpr,
+    QMAX_I: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     # Grid-stride over blocks so the launch grid can stay under the backend's
@@ -109,14 +134,27 @@ def quantize_per_tensor_kernel(
         else:
             x = tl.load(x_ptr + offsets, mask=offsets < n_elements, other=0.0)
         # ATen CPU quantizer: nearbyint(x * (1/scale in fp32)) + zero_point,
-        # then clamp, all in fp32. ``nearbyint`` is the only rounding
-        # primitive the backend keeps half-to-even after fusing with the
-        # product; see the module notes.
-        q = tl_extra_shim.nearbyint(x * inv_scale) + zero_point
-        # Degenerate scales (0.0) make x * inf NaN for x == 0; keep the store
-        # well-defined instead of relying on fptosi-of-NaN behaviour.
-        q = tl.where(q == q, q, 0.0)
-        q = tl.minimum(tl.maximum(q, qmin), qmax)
+        # then clamp, all in fp32. ``nearbyint`` is the only rounding primitive in this backend that preserves
+        # half-to-even semantics: the magic-number trick ((x+M)-M) is folded back to x by the compiler,
+        # with 101 rounding-related test cases measured to fail, so it cannot be replaced.
+        scaled = x * inv_scale
+        if RNE_F2I:
+            # Degenerate scales (0.0) make x * inf NaN for x == 0; the reference
+            # maps those elements to 0 *after* the zero-point add, so the NaN
+            # lanes are tracked and overwritten at the end (the int-domain add
+            # below would otherwise erase the NaN-ness).
+            nan_mask = scaled != scaled
+            scaled = tl.where(nan_mask, 0.0, scaled)
+            # Integer domain: RNE rounding -> add zero point -> clamp to the target dtype's integer range.
+            q = _round_half_even(scaled, True) + zero_point
+            q = tl.minimum(tl.maximum(q, QMIN_I), QMAX_I)
+            q = tl.where(nan_mask, 0, q)
+        else:
+            q = _round_half_even(scaled, False) + zero_point
+            # Keep the store well-defined instead of relying on
+            # fptosi-of-NaN behaviour.
+            q = tl.where(q == q, q, 0.0)
+            q = tl.minimum(tl.maximum(q, qmin), qmax)
         if ALIGNED:
             tl.store(out_ptr + offsets, q.to(out_ptr.dtype.element_ty))
         else:
@@ -378,6 +416,26 @@ def _per_tensor_affine_int():
     return _QSCHEME_PER_TENSOR_INT
 
 
+_QSCHEME_PER_CHANNEL_INT = None
+
+
+def _per_channel_affine_int():
+    """The raw ``QScheme`` integer for per-channel affine (sibling of the above)."""
+    global _QSCHEME_PER_CHANNEL_INT
+    if _QSCHEME_PER_CHANNEL_INT is None:
+        known = _EMPTY_PER_CHANNEL_OP.redispatch(
+            _QCPU_KEYSET,
+            [1],
+            scales=torch.tensor([1.0], dtype=torch.float64),
+            zero_points=torch.tensor([0], dtype=torch.int64),
+            axis=0,
+            dtype=torch.quint8,
+            device=torch.device("cpu"),
+        )
+        _QSCHEME_PER_CHANNEL_INT = _QSCHEME_OP.redispatch(_QCPU_KEYSET, known)
+    return _QSCHEME_PER_CHANNEL_INT
+
+
 # ---------------------------------------------------------------------------
 # GCU quantized-tensor platform layer.
 #
@@ -488,6 +546,77 @@ def _gcu_set_storage(self, source, storage_offset, size, stride=()):
 
 def _gcu_as_strided(self, size, stride, storage_offset=None):
     return _AS_STRIDED_OP.redispatch(_QCPU_KEYSET, self, size, stride, storage_offset)
+
+
+def _quantized_view_shell(qtensor):
+    """Zero-element quantized tensor carrying ``qtensor``'s quantizer.
+
+    Used as the destination of a storage-sharing ``set_``: the quantizer travels
+    with the TensorImpl while the storage stays where ``qtensor`` lives.
+    """
+    scheme = _QSCHEME_OP.redispatch(_QCPU_KEYSET, qtensor)
+    if scheme == _per_tensor_affine_int():
+        return _EMPTY_AFFINE_OP.redispatch(
+            _QCPU_KEYSET,
+            [0],
+            dtype=qtensor.dtype,
+            device=qtensor.device,
+            scale=_Q_SCALE_OP.redispatch(_QCPU_KEYSET, qtensor),
+            zero_point=_Q_ZERO_POINT_OP.redispatch(_QCPU_KEYSET, qtensor),
+            memory_format=torch.contiguous_format,
+        )
+    if scheme == _per_channel_affine_int():
+        return _EMPTY_PER_CHANNEL_OP.redispatch(
+            _QCPU_KEYSET,
+            [0],
+            scales=qtensor.q_per_channel_scales(),
+            zero_points=qtensor.q_per_channel_zero_points(),
+            axis=qtensor.q_per_channel_axis(),
+            dtype=qtensor.dtype,
+            device=qtensor.device,
+        )
+    raise NotImplementedError(
+        "the gcu backend rebuilds quantized views for affine quantizers only, "
+        f"got qscheme {scheme}"
+    )
+
+
+def _expand_strides(source_shape, source_stride, target_shape):
+    """ATen's expand stride rule: broadcast dims map to a zero stride."""
+    lead = len(target_shape) - len(source_shape)
+    strides = []
+    for index, extent in enumerate(target_shape):
+        if extent == 1 or index < lead or source_shape[index - lead] == 1:
+            strides.append(0)
+        else:
+            strides.append(source_stride[index - lead])
+    return strides
+
+
+def _gcu_expand(self, size, *args, **kwargs):
+    """``aten::expand`` on a quantized GCU tensor: a broadcast alias, not a copy.
+
+    torch_gcu ships no QuantizedPrivateUse1 kernel for ``expand``, so the
+    dispatch reaches the CPU fallback, which *copies* the tensor and returns a
+    host tensor -- every later op on the expanded view (``int_repr``,
+    ``dequantize``, ...) would then silently read CPU storage.
+    ``as_strided`` cannot be reused to rebuild the alias: a zero stride sends
+    the quantized path to that same CPU fallback. Sharing the storage through
+    ``set_`` keeps the payload on the device and matches native expand
+    semantics (no data copy).
+    """
+    target = torch._C._infer_size(self.shape, torch.Size(size))
+    strides = _expand_strides(self.shape, self.stride(), target)
+    alias = _quantized_view_shell(self)
+    _SET_STORAGE_OP.redispatch(
+        _QCPU_KEYSET,
+        alias,
+        self.untyped_storage(),
+        self.storage_offset(),
+        list(target),
+        strides,
+    )
+    return alias
 
 
 def _suggest_memory_format(t):
@@ -643,33 +772,38 @@ def _install_gcu_quantized_kernels():
     """
     if getattr(torch, "_flaggems_gcu_quantize_platform", False):
         return
-    lib = torch.library.Library("aten", "IMPL")
-    registrations = (
-        ("qscheme", _gcu_qscheme),
-        ("q_scale", _gcu_q_scale),
-        ("q_zero_point", _gcu_q_zero_point),
-        ("set_.source_Storage_storage_offset", _gcu_set_storage),
-        ("as_strided", _gcu_as_strided),
-        ("int_repr", _gcu_int_repr),
-        ("dequantize.self", _gcu_dequantize),
-        ("_copy_from", _gcu_copy_from),
-        ("_empty_affine_quantized", _gcu_empty_affine_factory),
-        (
-            "_empty_per_channel_affine_quantized",
-            _gcu_empty_per_channel_factory,
-        ),
-        ("_make_per_tensor_quantized_tensor", _gcu_make_per_tensor_quantized_tensor),
-    )
-    for name, impl in registrations:
+    _install_quantized_view_bridges()
+
+
+# Kept alive for the process lifetime: torch.library unregisters the kernels
+# when the handle is collected.
+_QUANTIZED_VIEW_LIBRARY = None
+
+
+def _install_quantized_view_bridges():
+    """Install the view kernels torch_gcu is missing for quantized tensors.
+
+    Only ops that genuinely have no QuantizedPrivateUse1 kernel are registered,
+    so a real backend kernel always wins if one appears later. Fail-soft: a
+    registration error must not take the whole backend import down.
+    """
+    global _QUANTIZED_VIEW_LIBRARY
+    if _QUANTIZED_VIEW_LIBRARY is not None:
+        return
+    bridges = {"expand": _gcu_expand}
+    library = None
+    for name, implementation in bridges.items():
+        if torch._C._dispatch_has_kernel_for_dispatch_key(
+            f"aten::{name}", "QuantizedPrivateUse1"
+        ):
+            continue
         try:
-            lib.impl(name, impl, "QuantizedPrivateUse1")
-        except RuntimeError:
-            logger.debug(
-                "quantize_per_tensor: %s already registered on "
-                "QuantizedPrivateUse1 by a sibling bridge; skipping",
-                name,
-            )
-    torch._flaggems_gcu_quantize_platform = lib
+            if library is None:
+                library = torch.library.Library("aten", "IMPL")
+            library.impl(name, implementation, "QuantizedPrivateUse1")
+        except Exception:
+            logger.debug("quantized view bridge for aten::%s unavailable", name)
+    _QUANTIZED_VIEW_LIBRARY = library
 
 
 # ---------------------------------------------------------------------------
@@ -871,8 +1005,17 @@ def _install_reference_shims():
                     and scale is not None
                     and zero_point is not None
                     and dtype is not None
-                    and not _gems_registration_active()
                 ):
+                    if _gems_registration_active():
+                        # During flag_gems dispatch, execution must land on this backend's Triton implementation:
+                        # falling back to the aten overload takes the CPU reference path — at 4096x4096
+                        # it is 43.6ms, while the Triton kernel takes only 0.45ms (about a 100x difference).
+                        # The benchmark's candidate criterion is precisely calling that overload within dispatch.
+                        if is_out and out is not None:
+                            return quantize_per_tensor_out(
+                                input, scale, zero_point, dtype, out=out
+                            )
+                        return quantize_per_tensor(input, scale, zero_point, dtype)
                     if is_out and out is not None:
                         return _quantize_out_reference(
                             input, scale, zero_point, dtype, out
@@ -935,13 +1078,20 @@ def _launch_quantize_kernel(a, out_int, scale, zero_point, qmin, qmax):
         return out_int
     inv_scale = _inv_scale_f32(scale)
     qmin_f, qmax_f = _f32_clamp_bounds(qmin, qmax)
-    # Block / warp sweet spot measured across the benchmark's core shapes
-    # (1M-537M elements): BLOCK=4096 with num_warps=2 reaches 185-251 GB/s
-    # for this 4-byte-read / 1-byte-write element (BLOCK=1024 caps at ~77
-    # GB/s; wider blocks over-subscribe and dip past 16384). Small buffers
-    # are launch-bound and insensitive.
+    # Block / warp sweet spot re-measured over the whole shape set this launcher
+    # serves (4K-655M elements, 4-byte-read / 1-byte-write): BLOCK=4096 with
+    # num_warps=2 wins at and above 16K elements, and a narrower 1024-element
+    # block -- previously selected for the 256K-4M range to grow the block grid
+    # -- measures 2.1-2.5x *slower* there ((1024, 1024): 0.069 ms -> 0.032 ms;
+    # (10000, 256): 0.175 ms -> 0.070 ms), so the range special-case is gone.
+    # Blocks wider than 8192 lose to 4096 at every size.
     BLOCK_SIZE = 4096
-    num_warps = 2
+    # Warp count is a parallelism knob only when the block grid is too small to
+    # fill the SMs (n <= 64K gives at most 16 programs): there the extra warps
+    # per program are the only source of concurrency, and 8 measured 1.5x over 2
+    # on (64, 64). Above that the block grid already saturates the machine, and
+    # 2 warps remain the best (see the block sweep below).
+    num_warps = 8 if n_elements <= 1 << 16 else 2
     # Drop the boundary masks when the task count divides evenly into blocks:
     # masked loads lower to per-element gathers on this backend even when the
     # mask is runtime-true.
@@ -960,6 +1110,9 @@ def _launch_quantize_kernel(a, out_int, scale, zero_point, qmin, qmax):
             qmax=qmax_f,
             n_elements=n_elements,
             ALIGNED=aligned,
+            RNE_F2I=qmax <= _F2I_MAX_QMAX,
+            QMIN_I=qmin,
+            QMAX_I=qmax,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
         )
@@ -1091,14 +1244,14 @@ def _make_per_tensor_from_int(int_repr, scale, zero_point):
 
 
 def quantize_per_tensor(a, scale, zero_point, dtype):
-    logger.debug("GEMS_ENFLAME_GCU400 QUANTIZE_PER_TENSOR")
+    logger.debug("GEMS_ENFLAME QUANTIZE_PER_TENSOR")
     _check_zero_point_range(zero_point, dtype)
     int_repr = _quantize_per_tensor_impl(a, scale, zero_point, dtype)
     return _make_per_tensor_from_int(int_repr, float(scale), int(zero_point))
 
 
 def quantize_per_tensor_out(a, scale, zero_point, dtype, *, out=None):
-    logger.debug("GEMS_ENFLAME_GCU400 QUANTIZE_PER_TENSOR_OUT")
+    logger.debug("GEMS_ENFLAME QUANTIZE_PER_TENSOR_OUT")
     _check_zero_point_range(zero_point, dtype)
     if out is None:
         raise RuntimeError("quantize_per_tensor.out: argument 'out' is required")

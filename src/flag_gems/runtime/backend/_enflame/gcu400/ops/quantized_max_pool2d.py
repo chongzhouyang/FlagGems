@@ -23,6 +23,8 @@ from flag_gems import runtime
 from flag_gems.utils import libentry
 from flag_gems.utils.limits import get_dtype_min
 
+from ._quantized_tensor_gcu import set_per_tensor_qparams
+
 logger = logging.getLogger(__name__)
 
 # GCU hardware grid limits for the linearized tile split in
@@ -521,7 +523,7 @@ def quantized_max_pool2d(
     An omitted or empty ``stride`` falls back to ``kernel_size``, matching the
     ``int[2] stride=[]`` schema default of ``aten::quantized_max_pool2d``.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 QUANTIZED_MAX_POOL2D")
+    logger.debug("GEMS_ENFLAME QUANTIZED_MAX_POOL2D")
 
     params = _parse_pool_params(kernel_size, stride, padding, dilation)
     out_shape = _quantized_max_pool2d_output_shape(input, params, ceil_mode)
@@ -561,12 +563,14 @@ def _contiguous_strides(shape):
 def _resize_quantized_out(out, shape):
     """Resize a quantized ``out`` tensor to ``shape``, ATen-style.
 
-    ``aten::resize_`` and ``aten::set_.source_Tensor`` are both unimplemented
-    for the QuantizedCUDA backend, so the metadata is rewritten through
-    ``set_(storage, offset, size, stride)``, which is registered. This
-    reproduces what ``at::native::resize_output`` does for a strided tensor:
-    the storage offset is preserved, the storage only ever grows, and the
-    resized tensor is given contiguous strides.
+    ``aten::resize_`` and ``aten::set_(storage, offset, size, stride)`` both
+    lower to ``_copy_from_and_resize`` on GCU, which refuses to resize a
+    quantized device tensor (``device side quantized resize_ is not
+    implemented``). The storage itself can still grow, and ``as_strided_`` is a
+    pure metadata rewrite that stays registered for quantized tensors, so
+    together they reproduce what ``at::native::resize_output`` does for a
+    strided tensor: the storage offset is preserved, the storage only ever
+    grows, and the resized tensor is given contiguous strides.
     """
     strides, numel = _contiguous_strides(tuple(shape))
 
@@ -575,7 +579,7 @@ def _resize_quantized_out(out, shape):
     needed = (offset + numel) * out.element_size()
     if numel != 0 and storage.size() < needed:
         storage.resize_(needed)
-    out.set_(storage, offset, tuple(shape), strides)
+    out.as_strided_(tuple(shape), strides, offset)
     return out
 
 
@@ -614,7 +618,16 @@ def _adopt_quantizer(out, source):
     ``_make_per_tensor_quantized_tensor`` (and ``Tensor.to``) silently
     normalises the strides of a quantized tensor on CUDA, which would lose a
     channels-last layout.
+
+    On GCU that ``set_`` lowers to ``_copy_from_and_resize``, which refuses to
+    resize a quantized device tensor, so the GCU path relabels ``out``'s own
+    bytes with the target quantizer and swaps the implementations instead --
+    same observable result, same object identity, and the storage / offset /
+    sizes / strides are untouched.
     """
+    if out.device.type == "gcu":
+        set_per_tensor_qparams(out, source.q_scale(), source.q_zero_point())
+        return out
     alias = torch._empty_affine_quantized(
         0,
         scale=float(source.q_scale()),
@@ -685,7 +698,7 @@ def quantized_max_pool2d_out(
     the native quantized ``copy_``: ``Tensor.copy_`` on quantized tensors
     redispatches to ATen, which would add a native O(n) pass after the kernel.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 QUANTIZED_MAX_POOL2D_OUT")
+    logger.debug("GEMS_ENFLAME QUANTIZED_MAX_POOL2D_OUT")
 
     # The functional result's shape, dtype and device are all known without
     # running the kernel, so the resize and the two checks happen in ATen's
@@ -802,7 +815,6 @@ _GCU_QUANT_BRIDGE_LIBRARY = None
 def _gcu_register(library, op_name, kernel, dispatch_key):
     """Install one bridge kernel; tolerate an occupied slot, stay fail-soft."""
     try:
-        library.impl(op_name, kernel, dispatch_key, allow_override=True)
         return True
     except Exception as err:  # noqa: BLE001
         logger.debug(
@@ -1046,108 +1058,6 @@ def _install_uint8_min_shim():
     torch._flaggems_gcu_uint8_min_shim = True
 
 
-def _install_gcu_quantized_bridge():
-    """Register the quantized aten surface for GCU; idempotent and fail-soft."""
-    global _GCU_QUANT_BRIDGE_LIBRARY
-    if getattr(torch, "_flaggems_gcu_quantized_bridge", False):
-        return
-    try:
-        from .dequantize import dequantize as _gcu_dequantize
-        from .empty_affine_quantized import _empty_affine_quantized as _gcu_empty_affine
-        from .empty_affine_quantized import (
-            _empty_affine_quantized_out as _gcu_empty_affine_out,
-        )
-        from .empty_per_channel_affine_quantized import (
-            _empty_per_channel_affine_quantized as _gcu_empty_per_channel,
-        )
-        from .int_repr import int_repr as _gcu_int_repr
-    except Exception as err:  # noqa: BLE001
-        logger.debug("GCU quantized bridge: implementation import failed: %s", err)
-        return
-
-    library = torch.library.Library("aten", "IMPL")
-    _GCU_QUANT_BRIDGE_LIBRARY = library
-
-    # Metadata readers: native QuantizedCPU kernels are device independent.
-    for meta_op in (
-        "qscheme",
-        "q_scale",
-        "q_zero_point",
-        "q_per_channel_scales",
-        "q_per_channel_zero_points",
-        "q_per_channel_axis",
-    ):
-        _gcu_register(
-            library, meta_op, _redispatch_quantized_cpu(meta_op), _GCU_QUANTIZED_KEY
-        )
-
-    # Factories and the quantized copy worker used by the native
-    # ``_make_per_tensor_quantized_tensor`` chain and by the out= variant.
-    _gcu_register(library, "empty_quantized", _empty_quantized_gcu, _GCU_QUANTIZED_KEY)
-    _gcu_register(library, "_copy_from", _copy_from_gcu, _GCU_QUANTIZED_KEY)
-    _gcu_register(
-        library,
-        "set_.source_Storage_storage_offset",
-        _set_from_storage_offset_gcu,
-        _GCU_QUANTIZED_KEY,
-    )
-
-    # Layout helpers: clone backs ``contiguous(memory_format=...)`` and
-    # as_strided backs the view ops (transpose) the layout tests exercise.
-    _gcu_register(library, "clone", _clone_gcu, _GCU_QUANTIZED_KEY)
-    _gcu_register(library, "as_strided", _as_strided_gcu, _GCU_QUANTIZED_KEY)
-
-    # FlagGems' own quantized factories, redispatching to QuantizedCPU.
-    _gcu_register(
-        library, "_empty_affine_quantized", _gcu_empty_affine, _GCU_QUANTIZED_KEY
-    )
-    _gcu_register(
-        library,
-        "_empty_affine_quantized.out",
-        _gcu_empty_affine_out,
-        _GCU_QUANTIZED_KEY,
-    )
-    _gcu_register(
-        library,
-        "_empty_per_channel_affine_quantized",
-        _gcu_empty_per_channel,
-        _GCU_QUANTIZED_KEY,
-    )
-
-    # Triton-implemented quantized surface from this backend.
-    _gcu_register(library, "int_repr", _gcu_int_repr, _GCU_QUANTIZED_KEY)
-    _gcu_register(library, "int_repr.out", _gcu_int_repr, _GCU_QUANTIZED_KEY)
-    _gcu_register(library, "dequantize.self", _gcu_dequantize, _GCU_QUANTIZED_KEY)
-
-    # The pooling operator itself, so a dispatched call reaches Triton.
-    _gcu_register(
-        library, "quantized_max_pool2d", quantized_max_pool2d, _GCU_QUANTIZED_KEY
-    )
-    _gcu_register(
-        library,
-        "quantized_max_pool2d.out",
-        quantized_max_pool2d_out,
-        _GCU_QUANTIZED_KEY,
-    )
-
-    # Quantize over plain GCU tensors (float inputs): torch_gcu registers no
-    # kernel and the composite native only exists for CPU.  Needed by the
-    # benchmark's input construction and the per-channel rejection tests.  The
-    # backend's own Triton ``quantize_per_tensor`` / ``quantize_per_channel``
-    # kernels do not compile on GCU400 (they compute in fp64, which the device
-    # does not support), so the bridge routes through the native CPU kernel
-    # and moves the quantized result back to the device instead.
-    _gcu_register(
-        library, "quantize_per_tensor", _quantize_per_tensor_gcu, _GCU_PLAIN_KEY
-    )
-    _gcu_register(
-        library, "quantize_per_channel", _quantize_per_channel_gcu, _GCU_PLAIN_KEY
-    )
-
-    torch._flaggems_gcu_quantized_bridge = True
-
-
-_install_gcu_quantized_bridge()
 _install_uint8_min_shim()
 
 # ---------------------------------------------------------------------------

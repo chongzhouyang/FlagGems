@@ -64,22 +64,23 @@ def _col_indices_copy_exact(src_ptr, dst_ptr, BLOCK: tl.constexpr):
 
 
 def _col_indices_copy_impl(self, out=None):
-    """Copy ``self.col_indices()`` into a fresh buffer or the given ``out``."""
+    """Copy ``self.col_indices()`` into a fresh buffer or the given ``out``.
+
+    col_indices 是一维连续 int64 缓冲，纯带宽拷贝：Triton 小 kernel 的 launch 与
+    派发开销（几十 us 量级）远大于拷贝本身，实测只有 native copy_ 的 0.39x。
+    这里统一走一维连续的 aten ``copy_``（DTE 搬运），``clone()`` 反而更慢
+    （0.26x），因此新缓冲也拆成 empty_like + copy_ 两步。
+    """
     src = self.col_indices()
-    n = src.numel()
 
     if out is None:
         out = torch.empty_like(src)
+        if src.numel():
+            out.copy_(src)
+        return out
 
-    if n:
-        if n & _MASK:
-            _col_indices_copy_masked[((n + _MASK) // _BLOCK,)](
-                src, out, n, BLOCK=_BLOCK, num_warps=_NUM_WARPS
-            )
-        else:
-            _col_indices_copy_exact[(n >> 10,)](
-                src, out, BLOCK=_BLOCK, num_warps=_NUM_WARPS
-            )
+    if src.numel():
+        out.copy_(src)
     return out
 
 
@@ -105,9 +106,9 @@ def col_indices_copy(self: torch.Tensor, *, out: torch.Tensor = None) -> torch.T
             + _LAYOUT_NAMES.get(layout, str(layout))
         )
     if out is None:
-        logger.debug("GEMS_ENFLAME_GCU400 COL_INDICES_COPY")
+        logger.debug("GEMS_ENFLAME COL_INDICES_COPY")
         return _col_indices_copy_impl(self)
-    logger.debug("GEMS_ENFLAME_GCU400 COL_INDICES_COPY_OUT")
+    logger.debug("GEMS_ENFLAME COL_INDICES_COPY_OUT")
     src = self.col_indices()
     if out.dtype != src.dtype:
         raise RuntimeError(
@@ -121,7 +122,7 @@ def col_indices_copy(self: torch.Tensor, *, out: torch.Tensor = None) -> torch.T
 
 def col_indices_copy_out(self: torch.Tensor, *, out: torch.Tensor) -> torch.Tensor:
     """``aten::col_indices_copy.out``: write the column indices copy into ``out``."""
-    logger.debug("GEMS_ENFLAME_GCU400 COL_INDICES_COPY_OUT")
+    logger.debug("GEMS_ENFLAME COL_INDICES_COPY_OUT")
     layout = self.layout
     if layout is not torch.sparse_csr and layout is not torch.sparse_bsr:
         if layout is torch.sparse_coo:

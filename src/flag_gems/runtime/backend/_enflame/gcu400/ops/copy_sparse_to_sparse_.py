@@ -61,7 +61,7 @@ _BIG_THRESH = 2_500_000
 
 
 def copy_sparse_to_sparse_(self, src, non_blocking=False):
-    logger.debug("GEMS_ENFLAME_GCU400 COPY_SPARSE_TO_SPARSE_")
+    logger.debug("GEMS_ENFLAME COPY_SPARSE_TO_SPARSE_")
     if self.layout != torch.sparse_coo or src.layout != torch.sparse_coo:
         raise RuntimeError("copy_sparse_to_sparse_ expects sparse COO tensors")
     if self.device != src.device:
@@ -82,40 +82,36 @@ def copy_sparse_to_sparse_(self, src, non_blocking=False):
         or self.sparse_dim() != src.sparse_dim()
         or self.dense_dim() != src.dense_dim()
     ):
-        # One-time structural resize: copy into fresh buffers and install them
-        # into self via a metadata swap. Runs once per workload (dst starts as
-        # zeros_like(src), i.e. nnz=0), so it is not in the timed path.
-        new_i = torch.empty_like(s_idx)
-        new_v = torch.empty(s_val.shape, dtype=self.dtype, device=self.device)
+        # If the structure does not match, first expand in place to src's structure, then reuse the copy path below.
+        # Note: on torch_gcu, the ``.device`` of a sparse COO tensor always reports cpu,
+        # so always take the device from ``_values()``; otherwise the new buffer will land on the host side and cause
+        # Triton to report "Pointer argument cannot be accessed from Kurama".
+        self.resize_as_sparse_(src)
+        d_idx = self._indices()
+        d_val = self._values()
+        if tuple(d_idx.shape) != tuple(s_idx.shape):
+            d_idx.resize_(s_idx.shape)
+        if tuple(d_val.shape) != tuple(s_val.shape):
+            d_val.resize_(s_val.shape)
         ni = s_idx.numel()
         nv = s_val.numel()
         if not s_idx.is_contiguous() or not s_val.is_contiguous():
-            copy_(new_i, s_idx, non_blocking)
-            copy_(new_v, s_val, non_blocking)
+            copy_(d_idx, s_idx, non_blocking)
+            copy_(d_val, s_val, non_blocking)
         elif ni + nv > 0:
             BLOCK = _BLOCK_BIG if ni + nv >= _BIG_THRESH else _BLOCK_SMALL
             split = (ni + BLOCK - 1) // BLOCK
             _copy_fused[(split + (nv + BLOCK - 1) // BLOCK,)](
                 s_idx,
-                new_i,
+                d_idx,
                 ni,
                 s_val,
-                new_v,
+                d_val,
                 nv,
                 split,
                 BLOCK=BLOCK,
                 num_warps=_NW,
             )
-        new_sp = torch.sparse_coo_tensor(
-            new_i,
-            new_v,
-            tuple(src.shape),
-            device=self.device,
-            is_coalesced=src.is_coalesced(),
-        )
-        # Replace sparse metadata while retaining the destination Python object,
-        # version counter, and weak references; swap_tensors rejects aliases.
-        self.data = new_sp
         self._coalesced_(src.is_coalesced())
         return self
 

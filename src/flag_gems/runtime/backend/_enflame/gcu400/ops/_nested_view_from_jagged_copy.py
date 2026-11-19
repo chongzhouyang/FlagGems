@@ -246,7 +246,7 @@ def _nested_view_from_jagged_copy(
     splitting the packed jagged dimension into batch elements according to
     `offsets` / `lengths`. The `_copy` variant owns a fresh copy of the buffer,
     which is produced here by a Triton kernel before building the nested view."""
-    logger.debug("GEMS_ENFLAME_GCU400 _NESTED_VIEW_FROM_JAGGED_COPY")
+    logger.debug("GEMS_ENFLAME _NESTED_VIEW_FROM_JAGGED_COPY")
 
     src = self.contiguous() if not self.is_contiguous() else self
     values_copy = torch.empty_like(src)

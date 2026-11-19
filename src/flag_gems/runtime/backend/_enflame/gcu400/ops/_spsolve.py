@@ -165,7 +165,7 @@ def spsolve(A, B, *, left=True):
     Returns:
         The dense solution vector ``X`` of shape (n,).
     """
-    logger.debug("GEMS_ENFLAME_GCU400 SPSOLVE")
+    logger.debug("GEMS_ENFLAME SPSOLVE")
 
     if A.layout != torch.sparse_csr:
         raise RuntimeError(

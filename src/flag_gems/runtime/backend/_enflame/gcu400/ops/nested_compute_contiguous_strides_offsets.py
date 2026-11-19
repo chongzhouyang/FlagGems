@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 # ATen scalar type name, used in dtype error messages.
 _DEBUG_TAG = "GEMS _NESTED_COMPUTE_CONTIGUOUS_STRIDES_OFFSETS"
 
+# Use the scalar loop when the number of elements does not exceed this threshold (the measured crossover point with the
+# numpy path, see
+# ``_compute_strides_offsets_python``).
+_SMALL_ELEMENTS = 16
+
 
 _ATEN_TYPE_NAMES = {
     torch.bool: "Bool",
@@ -69,18 +74,48 @@ def _raw_matrix(sizes, ntensors, orig_dim):
     return flat.cpu().numpy().reshape(ntensors, orig_dim)
 
 
-def _compute_strides_offsets(mat):
-    """A single reverse recurrence produces strides and one cumsum produces offsets.
+def _compute_strides_offsets_python(mat):
+    """小规模矩阵：标量循环优于多次 numpy ufunc 分派。
 
-    ``strides[j] = prod(sizes[j+1:])`` recurses right to left; the whole row product equals
-    ``strides[0] * sizes[0]``, truncated to int32 per ATen's int accumulator semantics and
-    sign-extended back to int64. All numpy ops wrap naturally in int64 two's complement, so no
-    ``np.errstate`` context is needed.
+    每次 numpy ufunc 调用有 ~1-2us 的固定分派成本，元素数很少时（实测
+    ``ntensors * orig_dim <= 16``）逐行标量展开更快；语义与 numpy 路径一致
+    （行乘积按 ATen 的 int32 累加器语义截断后以 int64 累积）。
+
+    Python 整数是无界的，而 ATen 在 int64 上回绕：所有 stride 先按 64 位掩码
+    取补码，再用 uint64 视图转 int64，避免超出 int64 范围时溢出报错。
+    """
+    stride_rows = []
+    offsets = np.empty(mat.shape[0], dtype=np.int64)
+    accumulated = 0
+    for row_index, row in enumerate(mat.tolist()):
+        stride_row = [1] * len(row)
+        product = 1
+        for col_index in range(len(row) - 1, -1, -1):
+            stride_row[col_index] = product & 0xFFFFFFFFFFFFFFFF
+            product *= row[col_index]
+        stride_rows.append(stride_row)
+        offsets[row_index] = accumulated
+        wrapped = product & 0xFFFFFFFF
+        accumulated += wrapped - 0x100000000 if wrapped >= 0x80000000 else wrapped
+    strides = np.array(stride_rows, dtype=np.uint64).view(np.int64)
+    return strides, offsets
+
+
+def _compute_strides_offsets(mat):
+    """单次反向递推产出 strides，一次 cumsum 产出 offsets。
+
+    ``strides[j] = prod(sizes[j+1:])`` 从右向左递推；整行乘积等于
+    ``strides[0] * sizes[0]``，按 ATen 的 int 累加器语义截断到 int32 再
+    符号扩展回 int64。所有 numpy 运算在 int64 补码下自然回绕，无需
+    ``np.errstate`` 上下文。
     """
     ntensors, orig_dim = mat.shape
-    # Only the rightmost column is always 1; other columns are overwritten by the recurrence below, so np.empty
-    # plus one column assignment suffices: np.ones' full fill measured 2.33us at (1024, 3), while
-    # np.empty plus one column assignment takes about 1.8us.
+    if ntensors * orig_dim <= _SMALL_ELEMENTS:
+        return _compute_strides_offsets_python(mat)
+    # Only the rightmost column is always 1; all other columns are overwritten by the recurrence below, so use np.empty
+    # and then
+    # initialize a single column: full fill with np.ones measured 2.33us on (1024, 3), while
+    # np.empty plus one column assignment takes only about 1.8us.
     strides = np.empty((ntensors, orig_dim), dtype=np.int64)
     strides[:, orig_dim - 1] = 1
     for col_index in range(orig_dim - 2, -1, -1):
@@ -110,11 +145,11 @@ def nested_compute_contiguous_strides_offsets(
 
     sizes = nested_size
 
-    # 0-dim input: ATen uses the input object itself as strides with no dtype check.
+    # 0-dimensional input: ATen directly uses the input object itself as strides, without a dtype check.
     if sizes.dim() == 0:
         return sizes, torch.empty((0,), dtype=torch.int64, device="cpu")
 
-    # ATen reads size(1) before checking dtype, so 1-dim inputs raise a dimension error regardless of dtype.
+    # ATen reads size(1) before checking dtype, so a 1-dimensional input raises a dimension error regardless of dtype.
     ntensors = sizes.size(0)
     orig_dim = sizes.size(1)
 

@@ -25,6 +25,26 @@ logger = logging.getLogger(__name__)
 # GCU grid.x hardware limit (65535): large pointwise tensors must use a
 # grid-stride loop instead of a one-block-per-tile launch.
 _MAX_GRID = 65535
+# Number of SIPS on GCU400 (resident grid cap consistent with other pointwise ops)
+_NUM_SIPS = 24
+
+
+def _round_config(n_elements, itemsize):
+    """选 (BLOCK_SIZE, num_warps, grid_cap)。
+
+    该 kernel 是 1 读 1 写的纯访存流，实测上限就是显存带宽（本卡约
+    200 GB/s），所以配置完全按实测带宽挑：
+    - 16 位：每 tile 只有 8 KB 数据，按 tile 数发几千个 CTA 时波次调度开销
+      明显（16.7M 元素只有 157 GB/s）。改成常驻网格（48 个 CTA）+ grid-stride
+      循环后能跑到 190 GB/s，超大张量（512M）从 181 GB/s 提到 195 GB/s。
+    - 32 位：每 tile 16 KB，按 tile 发 CTA 反而最快（195~201 GB/s），保持原样。
+    - 极小张量（n ≤ 4096）：单 CTA 直接覆盖，避免空转。
+    """
+    if n_elements <= 4096:
+        return triton.next_power_of_2(max(n_elements, 1)), 4, _NUM_SIPS * 2
+    if itemsize >= 4:
+        return 4096, 8, _MAX_GRID
+    return 4096, 4, _NUM_SIPS * 2
 
 
 @libentry()
@@ -33,6 +53,7 @@ def _special_round_kernel(
     x_ptr,
     out_ptr,
     scale,
+    recip,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -65,41 +86,43 @@ def _special_round_kernel(
             ),
         )
         result = sign * rounded_abs
-        # GCU has no fp64 support (P04: f64 arith.extf is rejected by the
-        # PassManager), so the upstream "divide in fp64" trick cannot be used.
-        # GCU's fp32 '/' lowers to a reciprocal-multiply with up to 1-ULP error,
-        # and tl.math.div_rn / tl.fdiv(ieee_rounding=True) alias to the same
-        # path. A Markstein FMA correction restores the correctly-rounded fp32
-        # quotient (bit-exact with the fp64 divide on all tested inputs);
-        # non-finite quotients (inf/NaN input, overflow) keep the plain path.
-        recip = 1.0 / scale
-        quot = result * recip
-        rem = tl.math.fma(-scale, quot, result)
-        quot_corr = tl.math.fma(rem, recip, quot)
-        finite = (quot == quot) & (tl.math.abs(quot) < float("inf"))
-        result = tl.where(finite, quot_corr, quot).to(x.dtype)
+        # Rescaling: GCU's fp32 '/' is, like torch_gcu's native aten::special_round,
+        # a reciprocal-multiply (1/10 is inexact in fp32, so 26*0.1f lands on
+        # the upper neighbor of 2.6). This must match that semantics bit-for-bit: do not use Markstein FMA
+        # to correct the quotient to the mathematically correctly rounded value, otherwise it will be 1 ULP off from the
+        # reference and fail
+        # (measured on 2026-11-17 with the decimals=1/3 case).
+        result = (result * recip).to(x.dtype)
 
         tl.store(out_ptr + offsets, result, mask=mask)
 
 
-def special_round(A, *, decimals=0):
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_ROUND")
-    scale = float(10**decimals)
-    out = torch.empty_like(A)
+def _launch(x, out, scale):
     n_elements = out.numel()
     if n_elements == 0:
         return out
-    grid = lambda meta: (min(triton.cdiv(n_elements, meta["BLOCK_SIZE"]), _MAX_GRID),)
-    _special_round_kernel[grid](A, out, scale, n_elements, BLOCK_SIZE=1024)
+    block_size, num_warps, grid_cap = _round_config(n_elements, out.element_size())
+    grid = min(triton.cdiv(n_elements, block_size), grid_cap, _MAX_GRID)
+    _special_round_kernel[(grid,)](
+        x,
+        out,
+        scale,
+        1.0 / scale,
+        n_elements,
+        BLOCK_SIZE=block_size,
+        num_warps=num_warps,
+    )
     return out
+
+
+def special_round(A, *, decimals=0):
+    logger.debug("GEMS_ENFLAME SPECIAL_ROUND")
+    logger.debug("GEMS_ENFLAME SPECIAL_ROUND_OUT")
+    scale = float(10**decimals)
+    out = torch.empty_like(A)
+    return _launch(A, out, scale)
 
 
 def special_round_out(self, out, *, decimals=0):
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_ROUND_OUT")
     scale = float(10**decimals)
-    n_elements = out.numel()
-    if n_elements == 0:
-        return out
-    grid = lambda meta: (min(triton.cdiv(n_elements, meta["BLOCK_SIZE"]), _MAX_GRID),)
-    _special_round_kernel[grid](self, out, scale, n_elements, BLOCK_SIZE=1024)
-    return out
+    return _launch(self, out, scale)

@@ -100,8 +100,6 @@ def _to_sss_kernel(
         mask=load_mask,
         other=0,
     )
-    Vr = tl.reshape(V, (BLOCK_R, NGRP, KSPARSE))
-
     # A group participates in the validity check only when its whole metadata
     # element is inside the tensor (BLOCK_C is a multiple of PER_META and
     # ncols % PER_META == 0, so groups are never partially in range).
@@ -109,11 +107,22 @@ def _to_sss_kernel(
     inrange = rmask[:, None] & (pid_c * BLOCK_C + gidx * KSPARSE < ncols)[None, :]
 
     if KSPARSE == 4:
-        # slots (0,2) and (1,3) split apart; then unwrap to the four scalars so
-        # the value gather is a pure tl.where tree (bit exact, no fp add).
-        va, vb = tl.split(tl.reshape(Vr, (BLOCK_R, NGRP, 2, 2)))
-        v0, v2 = tl.split(va)
-        v1, v3 = tl.split(vb)
+        # Direct per-slot loads.  gcu400 miscompiles the
+        # reshape -> split -> split de-interleave of a (BR, NGRP, 4) tile: the
+        # fourth slot reads garbage (standalone probe: v3 = [5,13,69,77] where
+        # [3,7,11,15] is expected), so every valid 2:4 fp16/bf16/int8 input was
+        # rejected as pattern-invalid.  Four strided loads give exact values
+        # and keep the value gather a pure tl.where tree (bit exact, no add).
+        base = dense_ptr + rows[:, None] * stride0
+        gcol = (pid_c * BLOCK_C + gidx * KSPARSE)[None, :]
+        c0c = gcol
+        c1c = gcol + 1
+        c2c = gcol + 2
+        c3c = gcol + 3
+        v0 = tl.load(base + c0c * stride1, mask=inrange & (c0c < ncols), other=0)
+        v1 = tl.load(base + c1c * stride1, mask=inrange & (c1c < ncols), other=0)
+        v2 = tl.load(base + c2c * stride1, mask=inrange & (c2c < ncols), other=0)
+        v3 = tl.load(base + c3c * stride1, mask=inrange & (c3c < ncols), other=0)
         n0 = v0 != 0
         n1 = v1 != 0
         n2 = v2 != 0
@@ -130,6 +139,7 @@ def _to_sss_kernel(
         pl = tl.reshape(tl.join(val0, val1), (BLOCK_R, BLOCK_C // 2))
         q = c0 | (c1 << 2)  # (BLOCK_R, NGRP)
     else:
+        Vr = tl.reshape(V, (BLOCK_R, NGRP, KSPARSE))
         v0, v1 = tl.split(tl.reshape(Vr, (BLOCK_R, NGRP, 1, 2)))
         v0 = tl.reshape(v0, (BLOCK_R, NGRP))
         v1 = tl.reshape(v1, (BLOCK_R, NGRP))
@@ -152,36 +162,15 @@ def _to_sss_kernel(
     tl.store(packed_ptr + poff, pl, mask=pmask)
 
     # ---- metadata node word: NG nibbles, low nibble first ----
-    # q holds one 4-bit field per group.  The word is assembled by an explicit
-    # reshape/split chain (each split peels the even/odd positions of the last
-    # axis) instead of a reduction over the group axis, and the fields are
-    # widened to uint32 before shifting so the top nibble of the int8 case
-    # never touches signed overflow.
-    qu = tl.reshape(q.to(tl.uint32), (BLOCK_R, BLOCK_META, NG))
-    if NG == 4:
-        qa, qb = tl.split(tl.reshape(qu, (BLOCK_R, BLOCK_META, 2, 2)))
-        q0, q2 = tl.split(qa)
-        q1, q3b = tl.split(qb)
-        w = q0 | (q1 << 4) | (q2 << 8) | (q3b << 12)
-    else:
-        # NG == 8: two reshape/split levels peel the even/odd group positions.
-        qa, qb = tl.split(tl.reshape(qu, (BLOCK_R, BLOCK_META, 4, 2)))
-        q_e0, q_e1 = tl.split(tl.reshape(qa, (BLOCK_R, BLOCK_META, 2, 2)))
-        q_o0, q_o1 = tl.split(tl.reshape(qb, (BLOCK_R, BLOCK_META, 2, 2)))
-        q0, q4 = tl.split(q_e0)
-        q2, q6 = tl.split(q_e1)
-        q1, q5 = tl.split(q_o0)
-        q3c, q7 = tl.split(q_o1)
-        w = (
-            q0
-            | (q1 << 4)
-            | (q2 << 8)
-            | (q3c << 12)
-            | (q4 << 16)
-            | (q5 << 20)
-            | (q6 << 24)
-            | (q7 << 28)
-        )
+    # Assemble by shifting and summing over the group axis: the four-bit fields
+    # are disjoint, so the sum equals the OR.  This avoids the reshape/split
+    # chains gcu400 miscompiles (same family as the value de-interleave above;
+    # the int8 NG == 8 chain produced wrong metadata), and the fields are
+    # widened to uint32 before shifting so the top nibble never touches signed
+    # overflow.
+    qq = tl.reshape(q.to(tl.uint32), (BLOCK_R, BLOCK_META, NG))
+    shifts = (4 * tl.arange(0, NG)).to(tl.uint32)
+    w = tl.sum(qq << shifts[None, None, :], axis=2)
 
     # ---- ColumnMajorInterleaved<2> reorder (cutlass::reorder_meta) ----
     m = rows[:, None]
@@ -349,7 +338,7 @@ def _compact_order(strides):
 
 
 def to_sparse_semi_structured(dense):
-    logger.debug("GEMS_ENFLAME_GCU400 TO_SPARSE_SEMI_STRUCTURED")
+    logger.debug("GEMS_ENFLAME TO_SPARSE_SEMI_STRUCTURED")
     if not isinstance(dense, torch.Tensor):
         raise RuntimeError(
             "_to_sparse_semi_structured: dense argument must be a Tensor"

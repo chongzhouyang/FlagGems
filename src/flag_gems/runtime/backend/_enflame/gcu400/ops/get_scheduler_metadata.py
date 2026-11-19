@@ -37,7 +37,7 @@ def tile_size_fwd_sm8x(
     softcap: bool = False,
     append_kv: bool = False,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 TILE_SIZE_FWD_SM8X")
+    logger.debug("GEMS_ENFLAME TILE_SIZE_FWD_SM8X")
     if element_size == 2:  # fp16/bf16
         if headdim <= 64:
             kBlockM = 128
@@ -116,7 +116,7 @@ def tile_size_fwd_sm90(
     softcap: bool = False,
     use_one_mma_wg: bool = False,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 TILE_SIZE_FWD_SM90")
+    logger.debug("GEMS_ENFLAME TILE_SIZE_FWD_SM90")
     if element_size == 2:
         if headdim <= 64:
             if headdim_v == 512:
@@ -173,7 +173,7 @@ def get_optimal_block_mn(
     varlen_and_split=False,
     append_kv=False,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 GET_OPTIMAL_BLOCK_MN")
+    logger.debug("GEMS_ENFLAME GET_OPTIMAL_BLOCK_MN")
     major, minor = get_device_capability()
     arch = major * 10 + minor
 
@@ -208,7 +208,7 @@ def get_optimal_block_mn(
 
 
 def round_up_headdim(headdim: int) -> int:
-    logger.debug("GEMS_ENFLAME_GCU400 ROUND_UP_HEADDIM")
+    logger.debug("GEMS_ENFLAME ROUND_UP_HEADDIM")
     if headdim <= 64:
         return 64
     if headdim <= 96:
@@ -223,7 +223,7 @@ def round_up_headdim(headdim: int) -> int:
 
 
 def round_up_headdimv(headdim_v: int) -> int:
-    logger.debug("GEMS_ENFLAME_GCU400 ROUND_UP_HEADDIMV")
+    logger.debug("GEMS_ENFLAME ROUND_UP_HEADDIMV")
     if headdim_v <= 64:
         return 64
     if headdim_v <= 96:
@@ -253,7 +253,7 @@ def get_pagedkv_tma(
     element_size: int,
     softcap: bool,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 GET_PAGEDKV_TMA")
+    logger.debug("GEMS_ENFLAME GET_PAGEDKV_TMA")
     if (
         arch < 90
         or (not has_page_table)
@@ -286,7 +286,7 @@ def use_one_mma_wg(
     num_heads: int,
     num_heads_k: int,
 ) -> bool:
-    logger.debug("GEMS_ENFLAME_GCU400 USE_ONE_MMA_WG")
+    logger.debug("GEMS_ENFLAME USE_ONE_MMA_WG")
     if arch < 90 or headdim != 128:
         return False
 
@@ -302,7 +302,7 @@ def should_pack_gqa(
     qhead_per_khead: int,
     blockM: int,
 ) -> bool:
-    logger.debug("GEMS_ENFLAME_GCU400 SHOULD_PACK_GQA")
+    logger.debug("GEMS_ENFLAME SHOULD_PACK_GQA")
     if varlen_q:
         return True
 
@@ -341,7 +341,7 @@ def get_num_splits(
     max_splits: int = 128,
     use_dynamic_split: bool = False,
 ) -> int:
-    logger.debug("GEMS_ENFLAME_GCU400 GET_NUM_SPLITS")
+    logger.debug("GEMS_ENFLAME GET_NUM_SPLITS")
     pagedkv_tma = False
     append_kv = max_seqlen_k_new > 0
 
@@ -526,18 +526,29 @@ def _prepare_pass1_kernel(
 @triton.jit
 def _prepare_pass2_kernel(
     num_n_blocks_per_seq_ptr,
-    num_splits_dynamic_ptr,
-    total_blocks,
+    scheduler_metadata_ptr,
+    total_blocks_ptr,
     num_batch,
     num_head,
     num_sm,
     num_splits_static,
+    SPLIT_OFFSET: tl.constexpr,
+    HAS_SEMAPHORE: tl.constexpr,
     BLOCK_SIZE_B: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     b_start = pid * BLOCK_SIZE_B
     b_offsets = b_start + tl.arange(0, BLOCK_SIZE_B)
     b_mask = b_offsets < num_batch
+
+    # Zero the semaphore slot (metadata[0]) inside the kernel, saving one host->device scalar write
+    if HAS_SEMAPHORE:
+        if pid == 0:
+            tl.store(scheduler_metadata_ptr, 0)
+
+    # total_blocks is accumulated on the device side by pass1; reading it directly inside the kernel here
+    # avoids one full-device synchronization caused by .item() on the host.
+    total_blocks = tl.load(total_blocks_ptr).to(tl.float32)
 
     blocks_per_sm_float = tl.ceil(total_blocks * 1.1 * num_head / num_sm)
     blocks_per_sm = blocks_per_sm_float.to(tl.int32)
@@ -550,7 +561,12 @@ def _prepare_pass2_kernel(
     num_splits_dynamic = tl.minimum(num_splits_dynamic, num_splits_static)
     num_splits_dynamic = tl.maximum(1, num_splits_dynamic)
 
-    tl.store(num_splits_dynamic_ptr + b_offsets, num_splits_dynamic, mask=b_mask)
+    # Write the splits segment directly into the finally returned metadata, saving one device->device copy
+    tl.store(
+        scheduler_metadata_ptr + SPLIT_OFFSET + b_offsets,
+        num_splits_dynamic,
+        mask=b_mask,
+    )
 
 
 def get_pack_gqa(
@@ -570,7 +586,7 @@ def get_pack_gqa(
     element_size: int,
     softcap: bool,
 ) -> bool:
-    logger.debug("GEMS_ENFLAME_GCU400 GET_PACK_GQA")
+    logger.debug("GEMS_ENFLAME GET_PACK_GQA")
     if arch < 90 or (has_page_table and not pagedkv_tma) or num_splits > 1:
         return True
     if num_heads == num_heads_k:
@@ -615,7 +631,7 @@ def get_scheduler_metadata(
     pack_gqa: Optional[bool] = None,
     sm_margin: int = 0,
 ) -> torch.Tensor:
-    logger.debug("GEMS_ENFLAME_GCU400 Get Scheduler Metadata")
+    logger.debug("GEMS_ENFLAME Get Scheduler Metadata")
     device = seqused_k.device
     dtype = torch.int32
 
@@ -723,11 +739,6 @@ def get_scheduler_metadata(
     )
     num_head_k = num_heads_k if pack_gqa else num_heads
 
-    seqlen_q = (
-        seqused_q
-        if seqused_q is not None
-        else torch.full((batch_size,), max_seqlen_q, dtype=dtype, device=device)
-    )
     seqlen_k = seqused_k
     seqlen_knew = (
         torch.full((batch_size,), max_seqlen_k_new, dtype=dtype, device=device)
@@ -735,15 +746,8 @@ def get_scheduler_metadata(
         else None
     )
 
-    num_m_blocks = torch.empty_like(seqlen_q)
-    num_n_blocks = torch.empty_like(seqlen_k)
-    total_blocks = torch.zeros((1,), dtype=dtype, device=device)
-    num_splits_dynamic = torch.empty_like(seqlen_q)
-
     BLOCK_SIZE_B = 128
     grid = (triton.cdiv(batch_size, BLOCK_SIZE_B),)
-
-    total_blocks_val = total_blocks.item()
 
     # dynamic split depends ONLY on batch_size, regardless of num_splits_static
     use_dynamic_split = batch_size <= 992
@@ -755,7 +759,7 @@ def get_scheduler_metadata(
 
         if not (is_fp16 or is_bf16):
             raise ValueError(
-                f"unsupported dtype: {qkv_dtype}. FlashAttention only supports: torch.float16, torch.bfloat16"
+                f"不支持的数据类型: {qkv_dtype}. FlashAttention只支持: torch.float16, torch.bfloat16"
             )
 
         d_rounded = d_rounded
@@ -835,10 +839,23 @@ def get_scheduler_metadata(
             append_kv=(max_seqlen_k_new > 0),
         )
 
-    num_m_blocks = torch.empty_like(seqlen_q)
-    num_n_blocks = torch.empty_like(seqlen_k)
-    total_blocks = torch.zeros((1,), dtype=dtype, device=device)
-    num_splits_dynamic = torch.empty_like(seqlen_q)
+    # Semaphore slot: is_varlen is always True, so only arch and splits are considered
+    scheduler_needs_semaphore = arch >= 90 or eff_num_splits > 1
+    split_offset = int(scheduler_needs_semaphore)
+    alloc_size = split_offset + int(use_dynamic_split) * batch_size
+
+    if alloc_size <= 0:
+        return torch.empty((0,), dtype=torch.int32, device=device)
+
+    # A single zeros produces both the returned metadata (front segment) and 3 scratch buffers (back segments):
+    # On GCU every torch tensor creation has a fixed launch overhead; after merging, only 3 device-side operations
+    # remain in total
+    # (zeros + pass1 + pass2). The metadata happens to be zero-initialized, so the semaphore slot needs no extra write.
+    pool = torch.zeros(alloc_size + 2 * batch_size + 1, dtype=dtype, device=device)
+    scheduler_metadata = pool[:alloc_size]
+    num_m_blocks = pool[alloc_size : alloc_size + batch_size]
+    num_n_blocks = pool[alloc_size + batch_size : alloc_size + 2 * batch_size]
+    total_blocks = pool[alloc_size + 2 * batch_size :]
 
     _prepare_pass1_kernel[grid](
         num_m_blocks,
@@ -867,55 +884,19 @@ def get_scheduler_metadata(
         HAS_CU_SEQLENS_K_NEW=cu_seqlens_k_new is not None,
     )
 
-    total_blocks_val = total_blocks.item()
-
     if use_dynamic_split:
+        # pass2 writes the splits segment directly into the returned metadata, saving a device->device copy
         _prepare_pass2_kernel[grid](
             num_n_blocks,
-            num_splits_dynamic,
-            total_blocks=total_blocks_val,
+            scheduler_metadata,
+            total_blocks,
             num_batch=batch_size,
             num_head=num_head_k,
             num_sm=num_sm,
             num_splits_static=eff_num_splits,
+            SPLIT_OFFSET=split_offset,
+            HAS_SEMAPHORE=False,
             BLOCK_SIZE_B=BLOCK_SIZE_B,
         )
-    else:
-        num_splits_dynamic.fill_(eff_num_splits)
 
-    final_num_splits = eff_num_splits
-
-    is_varlen = True
-
-    if arch >= 90:
-        scheduler_needs_semaphore = (
-            (final_is_causal or final_is_local) and (final_num_splits == 1)
-        ) or is_varlen
-    else:
-        scheduler_needs_semaphore = (final_is_causal and not is_varlen) or (
-            is_varlen and final_num_splits > 1
-        )
-
-    if use_dynamic_split:
-        final_num_splits_for_sem_check = eff_num_splits
-    else:
-        final_num_splits_for_sem_check = eff_num_splits
-
-    scheduler_needs_semaphore = arch >= 90 or final_num_splits_for_sem_check > 1
-
-    alloc_size = int(scheduler_needs_semaphore) + int(use_dynamic_split) * batch_size
-
-    if alloc_size > 0:
-        scheduler_metadata = torch.empty(alloc_size, dtype=torch.int32, device=device)
-        offset = 0
-        if scheduler_needs_semaphore:
-            scheduler_metadata[offset] = 0
-            offset += 1
-
-        if use_dynamic_split:
-            scheduler_metadata[offset:] = num_splits_dynamic
-        elif scheduler_needs_semaphore and not use_dynamic_split:
-            pass
-        return scheduler_metadata
-    else:
-        return torch.empty((0,), dtype=torch.int32, device=device)
+    return scheduler_metadata

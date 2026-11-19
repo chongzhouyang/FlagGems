@@ -62,18 +62,25 @@ _FUSED_JACOBI_WIDE_MAX_ROWS = 128
 # faster than the tridiagonalization path.
 _HERM_TRIDIAG_MIN_K_FP64 = 32
 _HERM_TRIDIAG_MIN_K_FP32 = 33
-# and the kernel restores the global tile index from tile_offset, semantically identical to a single launch.
-# Devices without native FP64 (e.g. GCU400) use a pure-FP32 Sturm fallback with an independent threshold.
+# Devices without native FP64 (such as GCU400) use a pure-FP32 Sturm fallback, with its own independently chosen
+# threshold.
 # On GCU400, tridiag + graph replay is faster than single-program fused Jacobi for k=9..31:
-# k=16 drops from 0.440ms to 0.377ms, k=17 from 0.631ms to 0.398ms; k<=8
+# k=16 drops from 0.440ms to 0.377ms and k=17 from 0.631ms to 0.398ms; k<=8
+# still uses fused Jacobi to avoid tridiag's fixed overhead.
 _HERM_TRIDIAG_MIN_K_NOFP64 = 9
 
-# still uses fused Jacobi to avoid tridiag's fixed overhead.
-# Three groups of launch parameters are module-level constants: the Jacobi single-program path is extremely
+# Three sets of launch parameters are hoisted to module-level constants: the single-program Jacobi path is highly
+# sensitive to the warp count,
+# while the reduction kernel's warp count determines the fixed overhead for small matrices, easing shape-tiered
+# regression validation.
 _FUSED_JACOBI_WARPS_BASE = 1
 _FUSED_JACOBI_WARPS_LARGE = 8
 _HERM_SCALE_WARPS = 4
 _SAFE_SCALE_WARPS = 1
+
+# The materialized scalar tolerance is read-only; cache it by value to avoid paying for a torch.full on every call.
+_TOLERANCE_CACHE = {}
+_TOLERANCE_CACHE_MAX = 64
 
 
 def _native_fp64_supported():
@@ -485,6 +492,7 @@ def _matrix_rank_fused_jacobi_kernel(
     REL_EPS: tl.constexpr,
     ABS_EPS: tl.constexpr,
     SCALAR_TOL: tl.constexpr,
+    INLINE_SCALE: tl.constexpr,
 ):
     # One program owns one matrix and runs the whole one-sided cyclic Jacobi
     # iteration. All pairs of a round-robin step are disjoint, so they are
@@ -497,7 +505,16 @@ def _matrix_rank_fused_jacobi_kernel(
     work_base = A_WORK + batch * K * ROWS
 
     column = 0
-    inv_s = 1.0 / tl.load(SCALE + batch)
+    if INLINE_SCALE:
+        # Single-kernel form: scale is computed inside this kernel, eliminating three separate host-side
+        # abs / amax / clamp_min launches (on small matrices, the host overhead of these three launches
+        # exceeds that of Jacobi itself). The first pass reads original values by column, storing while tracking
+        # the max of |A| (lanes outside the mask are excluded from the max by other=0.0);
+        # after obtaining scale, a second pass normalizes by 1/scale — the scaling must be applied to the matrix itself,
+        # because alpha/beta are sums of squares and would overflow/underflow at extreme magnitudes.
+        abs_max = tl.zeros((), dtype=A.dtype.element_ty)
+    else:
+        inv_s = 1.0 / tl.load(SCALE + batch)
     while column < K:
         if HERMITIAN:
             source_rows = tl.maximum(rows, column)
@@ -519,13 +536,27 @@ def _matrix_rank_fused_jacobi_kernel(
                 mask=row_mask,
                 other=0.0,
             )
-        # In-kernel scale normalization (same convention as rank1/rank2).
-        tl.store(work_base + column * ROWS + rows, values * inv_s, mask=row_mask)
+        if INLINE_SCALE:
+            tl.store(work_base + column * ROWS + rows, values, mask=row_mask)
+            abs_max = tl.maximum(abs_max, tl.max(tl.abs(values), axis=0))
+        else:
+            # In-kernel scale normalization (same convention as rank1/rank2).
+            tl.store(work_base + column * ROWS + rows, values * inv_s, mask=row_mask)
         column += 1
     # The init stores are distributed across all warps of the block; the
     # sweep loop below reads the whole tile with a potentially different
     # lane mapping, so a block barrier is required for visibility.
     tl.debug_barrier()
+    if INLINE_SCALE:
+        # An all-zero matrix is normalized by 1 (same semantics as _matrix_rank_safe_scale_kernel:
+        # when scale is 0, 1/scale would be inf; after normalization the all-zero matrix is still all zeros).
+        inv_s = 1.0 / tl.where(abs_max > 0.0, abs_max, 1.0)
+        column = 0
+        while column < K:
+            raw = tl.load(work_base + column * ROWS + rows, mask=row_mask, other=0.0)
+            tl.store(work_base + column * ROWS + rows, raw * inv_s, mask=row_mask)
+            column += 1
+        tl.debug_barrier()
 
     pair = tl.arange(0, BLOCK_P)
     ring: tl.constexpr = ROUND - 1
@@ -1357,7 +1388,18 @@ def _materialize_tolerance(value, batch_shape, input):
     if isinstance(value, torch.Tensor):
         return value
     tol_dtype = torch.float64 if _native_fp64_supported() else torch.float32
-    return torch.full(batch_shape, value, dtype=tol_dtype, device=input.device)
+    # The materialized tolerance is only read by the kernel (never written), so cache it by
+    # (value, shape, dtype, device) for reuse: for small matrices, a single torch.full incurs more
+    # host/launch overhead than the Jacobi body itself, so there is no need to recreate it on repeated calls.
+    key = (float(value), tuple(batch_shape), tol_dtype, input.device)
+    cached = _TOLERANCE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if len(_TOLERANCE_CACHE) >= _TOLERANCE_CACHE_MAX:
+        _TOLERANCE_CACHE.clear()
+    tolerance = torch.full(batch_shape, value, dtype=tol_dtype, device=input.device)
+    _TOLERANCE_CACHE[key] = tolerance
+    return tolerance
 
 
 def _prepare_tolerances(input, atol, rtol):
@@ -2883,37 +2925,49 @@ def _launch_matrix_rank(
     # and needs no change).  For hermitian input the scale ignores the
     # strict upper triangle, which torch never reads (it may hold
     # garbage).
-    if hermitian and m == n and k <= 128:
-        # Small square matrices use one Triton kernel; large matrices keep generic reduction to avoid a huge BLOCK_K^2.
-        scale = torch.empty((batch_count,), dtype=input.dtype, device=input.device)
-        with torch_device_fn.device(input.device):
-            _matrix_rank_herm_scale_kernel[(batch_count,)](
-                matrix,
-                scale,
-                K=k,
-                BLOCK_K=triton.next_power_of_2(k),
-                num_warps=_HERM_SCALE_WARPS,
-            )
-    else:
-        visible = torch.tril(matrix) if hermitian else matrix
-        scale = visible.abs().amax(dim=(-2, -1))
-    # Zero scale -> 1 with a dedicated kernel (NOT torch.clamp_min: the
-    # generic clamp casts through fp32 under use_gems() dispatch, flushing
-    # any fp64 floor to zero; a zero scale then turns 0/0 into NaN and the
-    # Sturm sign counts collapse).  One kernel, identical on the direct
-    # and dispatched paths.
-    with torch_device_fn.device(input.device):
-        _matrix_rank_safe_scale_kernel[(batch_count,)](
-            scale, num_warps=_SAFE_SCALE_WARPS
-        )
+    # The dispatch decision must come before scale computation: the fused Jacobi branch computes scale on the fly
+    # during the same loads inside the kernel (INLINE_SCALE), so the host needs no
+    # abs / amax / clamp_min separate launches at all.
     # small_path must mirror the dispatch order below exactly: hermitian
     # matrices eligible for BOTH fused Jacobi and tridiagonalization take
     # the tridiag branch (use_bidiag and fused are mutually exclusive, so
     # no guard is needed there).
-    # Strictly match actual dispatch order: k<=2 / fused Jacobi uses atol_ptr,
-    # tridiag / bidiag uses staged atol_tensor. The old fused_eligible dependency
-    # diverged from the real branch for "hermitian with fused disabled".
+    # Strictly consistent with the actual dispatch order: k<=2 / fused Jacobi uses atol_ptr,
+    # tridiag / bidiag use the staged atol_tensor. It previously relied on fused_eligible,
+    # which was out of sync with the actual branch when "hermitian and fused disabled".
     small_path = (k <= 2) or (not herm_tridiag and not use_bidiag)
+    # The actual condition for reaching the single-kernel fused Jacobi branch (consistent with the dispatch order
+    # below).
+    fused_path = (k > 2) and (not herm_tridiag) and (not use_bidiag)
+    out = torch.empty(output_shape, dtype=torch.int64, device=input.device)
+    if fused_path:
+        # Under INLINE_SCALE the SCALE pointer is not dereferenced; use out as a zero-cost placeholder.
+        scale = out
+    else:
+        if hermitian and m == n and k <= 128:
+            # Small square matrices use a single Triton kernel; large matrices still use the general reduction to avoid
+            # an overly large BLOCK_K^2.
+            scale = torch.empty((batch_count,), dtype=input.dtype, device=input.device)
+            with torch_device_fn.device(input.device):
+                _matrix_rank_herm_scale_kernel[(batch_count,)](
+                    matrix,
+                    scale,
+                    K=k,
+                    BLOCK_K=triton.next_power_of_2(k),
+                    num_warps=_HERM_SCALE_WARPS,
+                )
+        else:
+            visible = torch.tril(matrix) if hermitian else matrix
+            scale = visible.abs().amax(dim=(-2, -1))
+        # Zero scale -> 1 with a dedicated kernel (NOT torch.clamp_min: the
+        # generic clamp casts through fp32 under use_gems() dispatch, flushing
+        # any fp64 floor to zero; a zero scale then turns 0/0 into NaN and the
+        # Sturm sign counts collapse).  One kernel, identical on the direct
+        # and dispatched paths.
+        with torch_device_fn.device(input.device):
+            _matrix_rank_safe_scale_kernel[(batch_count,)](
+                scale, num_warps=_SAFE_SCALE_WARPS
+            )
     # Scalar tolerances are passed as tl.float64 kernel arguments; on
     # devices without native FP64 the f64 kernel code is off-limits even
     # under a constexpr guard that never fires, so fall back to the pointer
@@ -2954,7 +3008,6 @@ def _launch_matrix_rank(
         rtol_tensor = _materialize_tolerance(rtol, output_shape, input)
         atol_tensor = atol_tensor.reshape(batch_count)
         rtol_tensor = rtol_tensor.reshape(batch_count)
-    out = torch.empty(output_shape, dtype=torch.int64, device=input.device)
     block_r = triton.next_power_of_2(rows)
     relative_epsilon = 1.0e-15 if is_fp64 else 1.0e-7
     absolute_epsilon = 1.0e-300 if is_fp64 else 1.0e-30
@@ -3062,6 +3115,7 @@ def _launch_matrix_rank(
                 REL_EPS=relative_epsilon,
                 ABS_EPS=absolute_epsilon,
                 SCALAR_TOL=scalar_tol,
+                INLINE_SCALE=True,
                 num_warps=fused_warps,
                 enable_fp_fusion=not is_fp64,
             )
@@ -3109,7 +3163,7 @@ def _correct_negative_tolerance_rank(input, result, atol, rtol, hermitian):
 
 def linalg_matrix_rank(input, *, atol=None, rtol=None, hermitian=False):
     """Computes numerical matrix rank using shape-specialized Triton kernels."""
-    logger.debug("GEMS_ENFLAME_GCU400 LINALG_MATRIX_RANK")
+    logger.debug("GEMS_ENFLAME LINALG_MATRIX_RANK")
     _check_input(input, hermitian)
 
     output_shape = input.shape[:-2]
@@ -3134,7 +3188,7 @@ def linalg_matrix_rank(input, *, atol=None, rtol=None, hermitian=False):
 
 def linalg_matrix_rank_tol(input, tol, hermitian=False):
     """NumPy-compatible legacy overload where tol is an absolute tolerance."""
-    logger.debug("GEMS_ENFLAME_GCU400 LINALG_MATRIX_RANK_TOL")
+    logger.debug("GEMS_ENFLAME LINALG_MATRIX_RANK_TOL")
     return linalg_matrix_rank(input, atol=tol, rtol=0.0, hermitian=hermitian)
 
 
@@ -3167,12 +3221,12 @@ def _copy_rank_to_out(input, result, out):
 
 
 def linalg_matrix_rank_out(input, *, atol=None, rtol=None, hermitian=False, out=None):
-    logger.debug("GEMS_ENFLAME_GCU400 LINALG_MATRIX_RANK_OUT")
+    logger.debug("GEMS_ENFLAME LINALG_MATRIX_RANK_OUT")
     result = linalg_matrix_rank(input, atol=atol, rtol=rtol, hermitian=hermitian)
     return _copy_rank_to_out(input, result, out)
 
 
 def linalg_matrix_rank_tol_out(input, tol, hermitian=False, *, out=None):
-    logger.debug("GEMS_ENFLAME_GCU400 LINALG_MATRIX_RANK_TOL_OUT")
+    logger.debug("GEMS_ENFLAME LINALG_MATRIX_RANK_TOL_OUT")
     result = linalg_matrix_rank_tol(input, tol, hermitian)
     return _copy_rank_to_out(input, result, out)

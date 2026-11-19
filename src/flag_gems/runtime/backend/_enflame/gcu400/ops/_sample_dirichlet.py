@@ -27,6 +27,21 @@ from flag_gems.utils.random_utils import (
 
 logger = logging.getLogger(__name__)
 
+# Tile-shape constants for the single-pass kernel (gcu400 tuned):
+#   * a [ROWS, BLOCK_K] program tile aims at <= TILE_LANES lanes, which keeps
+#     the sampler's live set (~15 fp32 vectors/tile) inside ~120KB of DSM so
+#     several CTAs still co-reside per SM (tiles beyond ~2048 lanes measured
+#     3-13x slower: DSM spills serialize the extern transcendental chain);
+#   * each GCU warp drives LANES_PER_WARP=512 lanes, so num_warps follows the
+#     tile width (measured: nw < lanes/512 starves the extern calls, nw above
+#     it just idles warps).
+TILE_LANES = 2048
+ROWS_MAX = 32
+LANES_PER_WARP = 512
+# gcu400 grid.x is capped at 65535 programs; larger row counts fold into the
+# y axis (GRID_X is the folded x size, 0 meaning a plain 1D launch).
+GRID_X_MAX = 65535
+
 
 @triton.jit
 def sample_gamma_marsaglia_tsang(
@@ -123,28 +138,106 @@ def sample_dirichlet_kernel(
     BLOCK_K: tl.constexpr,
     MAX_ITER: tl.constexpr,
     COMPUTE_DTYPE: tl.constexpr,
+    ROWS: tl.constexpr,
+    GRID_X: tl.constexpr,
 ):
     """
-    Sample from Dirichlet distribution.
-    Input shape: [N, K], output shape: [N, K]
-    Each row is normalized to sum to 1.
+    Sample from Dirichlet distribution, single-pass over a [ROWS, BLOCK_K] tile.
+
+    One program owns ROWS whole rows and BLOCK_K >= K columns, so the raw
+    gammas stay in registers: sample once, reduce the row sum in-register,
+    normalize, store.  This halves the gamma-sampling work of the two-pass
+    scheme (needed only when K spans several BLOCK_K blocks) and the ROWS-batch
+    amortizes the extern transcendental calls that dominate this kernel on
+    gcu400 (measured 5-7x over ROWS=1 at equal total lanes).
+
+    Per-element philox counters follow the upstream scheme
+    (philox_offset + element_index*512), independent of the tile layout, so
+    re-seeded draws match the upstream/generic kernel element-for-element.
+    """
+    philox_seed = philox_seed.to(tl.int64)
+    philox_offset = philox_offset.to(tl.int64)
+
+    # GRID_X == 0 means the grid never folds into y (the overwhelmingly
+    # common case); the fold keeps grid.x inside the 65535 hardware limit.
+    if GRID_X == 0:
+        pid = tl.program_id(0)
+    else:
+        pid = tl.program_id(0) + tl.program_id(1) * GRID_X
+
+    # Load the clamp floor in COMPUTE_DTYPE. It must come through a pointer of
+    # the input dtype: a Python-float kernel arg is coerced to fp32 and fp64's
+    # tiny (2.2e-308) would underflow to zero, defeating the clamp.
+    tiny = tl.load(tiny_ptr).to(COMPUTE_DTYPE)
+
+    row_offs = pid * ROWS + tl.arange(0, ROWS)
+    row_mask = row_offs < N
+    k_offs = tl.arange(0, BLOCK_K)
+    k_mask = k_offs < K
+    alpha_idx = row_offs[:, None] * K + k_offs[None, :]
+    mask = row_mask[:, None] & k_mask[None, :]
+
+    alpha = tl.load(alpha_ptr + alpha_idx, mask=mask, other=1.0)
+
+    counter_base = philox_offset + alpha_idx.to(tl.int64) * 512
+    c0 = (counter_base & 0xFFFFFFFF).to(tl.uint32)
+    c1 = ((counter_base >> 32) & 0xFFFFFFFF).to(tl.uint32)
+    z = c0 * 0
+
+    gamma = sample_gamma_marsaglia_tsang(
+        alpha, philox_seed, c0, c1, z, MAX_ITER, COMPUTE_DTYPE
+    )
+    # ATen clamps each gamma draw to the output dtype's smallest positive
+    # value so tiny-alpha rows (whose boost factor U**(1/alpha) underflows
+    # to zero) still sum to a well-defined 1 instead of 0/0.
+    gamma = tl.maximum(gamma, tiny)
+    # Every gamma was clamped to tiny, so each real row's sum is >= K*tiny > 0
+    # and no epsilon floor is needed.  Fully masked rows reduce to 0, giving
+    # inv_sum = inf there, but those lanes are never stored.
+    gamma_sum = tl.sum(tl.where(mask, gamma, 0.0).to(COMPUTE_DTYPE), axis=1)
+    inv_sum = 1.0 / gamma_sum
+    normalized = gamma * inv_sum[:, None]
+    tl.store(out_ptr + alpha_idx, normalized.to(out_ptr.dtype.element_ty), mask=mask)
+
+
+@libentry()
+@triton.jit(do_not_specialize=["philox_seed", "philox_offset", "N", "K"])
+def sample_dirichlet_kernel_multi_block(
+    alpha_ptr,
+    out_ptr,
+    N,
+    K,
+    philox_seed,
+    philox_offset,
+    tiny_ptr,
+    BLOCK_K: tl.constexpr,
+    MAX_ITER: tl.constexpr,
+    COMPUTE_DTYPE: tl.constexpr,
+    GRID_X: tl.constexpr,
+):
+    """
+    Two-pass Dirichlet sampling for rows wider than one BLOCK_K block (K > 1024).
 
     A Dirichlet draw is Gamma(alpha_k) / sum_j Gamma(alpha_j), so the row must
-    be normalized by the *full* row sum. When K spans more than one BLOCK_K the
-    per-element gammas cannot be normalized until every block has contributed to
-    the sum, so this kernel makes two passes over the row:
+    be normalized by the *full* row sum.  When K spans more than one BLOCK_K
+    the per-element gammas cannot all stay in registers, so this kernel makes
+    two passes over the row:
 
       1. sample each gamma and accumulate the full-row sum;
       2. re-sample each gamma (deterministic under the same philox counter) and
          divide by the full-row sum.
 
     Re-sampling avoids stashing the raw gammas in the low-precision output
-    buffer, so the normalization stays in COMPUTE_DTYPE.
+    buffer, so the normalization stays in COMPUTE_DTYPE.  GRID_X folds large
+    row counts into grid.y exactly like sample_dirichlet_kernel.
     """
     philox_seed = philox_seed.to(tl.int64)
     philox_offset = philox_offset.to(tl.int64)
 
-    row_id = tl.program_id(0)
+    if GRID_X == 0:
+        row_id = tl.program_id(0)
+    else:
+        row_id = tl.program_id(0) + tl.program_id(1) * GRID_X
 
     if row_id >= N:
         return
@@ -171,15 +264,9 @@ def sample_dirichlet_kernel(
         gamma = sample_gamma_marsaglia_tsang(
             alpha, philox_seed, c0, c1, z, MAX_ITER, COMPUTE_DTYPE
         )
-        # ATen clamps each gamma draw to the output dtype's smallest positive
-        # value so tiny-alpha rows (whose boost factor U**(1/alpha) underflows
-        # to zero) still sum to a well-defined 1 instead of 0/0.
         gamma = tl.maximum(gamma, tiny)
         gamma_sum += tl.sum(tl.where(mask, gamma, 0.0).to(COMPUTE_DTYPE))
 
-    # Every gamma was clamped to tiny, so gamma_sum >= K * tiny > 0; no epsilon
-    # floor is needed (and a fixed floor like 1e-30 would corrupt fp32 rows whose
-    # true sum, ~K * 1.18e-38, legitimately falls below it).
     inv_sum = 1.0 / gamma_sum
 
     # Pass 2: re-sample each gamma with the identical counters and normalize.
@@ -217,7 +304,7 @@ def _sample_dirichlet(input, generator=None):
         Tensor of same shape as input, where each K-dimensional vector
         sums to 1
     """
-    logger.debug("GEMS_ENFLAME_GCU400 _SAMPLE_DIRICHLET")
+    logger.debug("GEMS_ENFLAME _SAMPLE_DIRICHLET")
 
     assert input.dtype in (
         torch.float16,
@@ -253,13 +340,14 @@ def _sample_dirichlet(input, generator=None):
         increment, generator=generator
     )
 
-    # Use power-of-2 block size
-    BLOCK_K = triton.next_power_of_2(min(K, 1024))
-
-    # Worst-case rejection iterations. Marsaglia-Tsang accepts in ~1 draw on
-    # average; the kernel exits as soon as every lane has accepted, so this is
-    # only a safety bound and is rarely reached.
-    MAX_ITER = 100
+    # Worst-case rejection iterations. Marsaglia-Tsang accepts with >95%
+    # probability per draw, so a lane still missing a sample after 8 draws
+    # has probability < (0.05)^8 ~ 4e-11; such a lane degenerates to the
+    # clamped tiny value and its row still sums to 1. The gcu400 fixed-trip
+    # loop (see the sampler) makes every extra iteration cost full price on
+    # every lane, so unlike the upstream early-exit version this bound is the
+    # real trip count and is kept tight on purpose (100 -> 8 measured ~9.7x).
+    MAX_ITER = 8
 
     # fp64 inputs keep double precision through sampling and normalization;
     # every other float dtype samples in fp32 (its uniforms have only fp32
@@ -271,19 +359,61 @@ def _sample_dirichlet(input, generator=None):
     # Passed as a 0-d tensor (not a Python float) to keep fp64 precision.
     tiny = torch.tensor(torch.finfo(inp.dtype).tiny, dtype=inp.dtype, device=inp.device)
 
-    grid = (N,)
     with torch_device_fn.device(inp.device):
-        sample_dirichlet_kernel[grid](
-            inp,
-            out,
-            N,
-            K,
-            philox_seed,
-            philox_offset,
-            tiny,
-            BLOCK_K=BLOCK_K,
-            MAX_ITER=MAX_ITER,
-            COMPUTE_DTYPE=compute_dtype,
-        )
+        if K <= TILE_LANES:
+            # Fast path: one program tile spans whole rows, gammas stay in
+            # registers and each element is sampled exactly once.  ROWS is
+            # kept a power of two (tl.arange requirement): the bit_length
+            # form rounds the row batch down to the previous power of two so
+            # the tail program masks its extra rows instead of requesting an
+            # odd-shaped tile.
+            BLOCK_K = triton.next_power_of_2(K)
+            ROWS = min(
+                ROWS_MAX,
+                max(1, TILE_LANES // BLOCK_K),
+                1 << (max(N, 1).bit_length() - 1),
+            )
+            num_warps = max(1, ROWS * BLOCK_K // LANES_PER_WARP)
+            n_prog = triton.cdiv(N, ROWS)
+            if n_prog <= GRID_X_MAX:
+                grid = (n_prog,)
+                grid_x = 0
+            else:
+                grid_x = GRID_X_MAX
+                grid = (grid_x, triton.cdiv(n_prog, grid_x))
+            sample_dirichlet_kernel[grid](
+                inp,
+                out,
+                N,
+                K,
+                philox_seed,
+                philox_offset,
+                tiny,
+                BLOCK_K=BLOCK_K,
+                MAX_ITER=MAX_ITER,
+                COMPUTE_DTYPE=compute_dtype,
+                ROWS=ROWS,
+                GRID_X=grid_x,
+                num_warps=num_warps,
+            )
+        else:
+            # Rows wider than one tile: two-pass multi-block sampling.
+            BLOCK_K = 1024
+            grid_x = min(N, GRID_X_MAX)
+            grid = (grid_x, triton.cdiv(N, grid_x))
+            sample_dirichlet_kernel_multi_block[grid](
+                inp,
+                out,
+                N,
+                K,
+                philox_seed,
+                philox_offset,
+                tiny,
+                BLOCK_K=BLOCK_K,
+                MAX_ITER=MAX_ITER,
+                COMPUTE_DTYPE=compute_dtype,
+                GRID_X=0 if N <= GRID_X_MAX else GRID_X_MAX,
+                num_warps=BLOCK_K // LANES_PER_WARP,
+            )
 
     return out.reshape(orig_shape)

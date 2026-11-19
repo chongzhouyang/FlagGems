@@ -24,16 +24,23 @@ from flag_gems.ops.bitwise_and import bitwise_and_tensor
 logger = logging.getLogger(__name__)
 
 _INT32_MAX = torch.iinfo(torch.int32).max
+# The launcher caps the grid at this many programs; the kernel walks the
+# remaining blocks with a pid-stride loop so the 1G-element core shapes stay
+# under the gcu400 grid.x limit of 65535 (Required 524288 before the cap).
+MAX_GRID = 48
 
 
 @triton.jit
 def and_tensor_kernel(x_ptr, y_ptr, out_ptr, numel, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
-    offset = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offset < numel
-    x = tl.load(x_ptr + offset, mask=mask, other=0).to(x_ptr.dtype.element_ty)
-    y = tl.load(y_ptr + offset, mask=mask, other=0).to(y_ptr.dtype.element_ty)
-    tl.store(out_ptr + offset, x & y, mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (numel + BLOCK - 1) // BLOCK
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offset = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offset < numel
+        x = tl.load(x_ptr + offset, mask=mask, other=0).to(x_ptr.dtype.element_ty)
+        y = tl.load(y_ptr + offset, mask=mask, other=0).to(y_ptr.dtype.element_ty)
+        tl.store(out_ptr + offset, x & y, mask=mask)
 
 
 def _use_fast_path(x, y):
@@ -65,13 +72,13 @@ def and_tensor(self, other):
     generic rank/stride analysis in ``pointwise_dynamic`` — its Python-side
     preparation dominates latency for small and mid-size inputs.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 AND")
+    logger.debug("GEMS_ENFLAME AND")
     if _use_fast_path(self, other):
         numel = self.numel()
         if numel == 0:
             return torch.empty_like(self)
         out = torch.empty_like(self)
-        grid = (triton.cdiv(numel, 2048),)
+        grid = (min(triton.cdiv(numel, 2048), MAX_GRID),)
         and_tensor_kernel[grid](self, other, out, numel, BLOCK=2048, num_warps=4)
         return out
     return bitwise_and_tensor(self, other)

@@ -2293,7 +2293,7 @@ def _validate_out(out, dtype, batch_shape, m, n, mode):
 
 
 def linalg_qr(A, mode="reduced", *, out=None):
-    logger.debug("GEMS_ENFLAME_GCU400 LINALG_QR")
+    logger.debug("GEMS_ENFLAME LINALG_QR")
     return _linalg_qr(A, mode, out=out)
 
 
@@ -2447,7 +2447,7 @@ def _linalg_qr(A, mode="reduced", *, out=None):
 
 
 def linalg_qr_out(A, mode="reduced", *, Q, R):
-    logger.debug("GEMS_ENFLAME_GCU400 LINALG_QR_OUT")
+    logger.debug("GEMS_ENFLAME LINALG_QR_OUT")
     return _linalg_qr(A, mode, out=(Q, R))
 
 
@@ -2468,6 +2468,16 @@ def linalg_qr_out(A, mode="reduced", *, Q, R):
 # the FlagGems Triton kernel via the dispatcher, which handles all m -- so the
 # shim passes through and stays out of the production path.  Drop once
 # topsatenGeqrf sizes its workspace correctly.
+#
+# 2026-11-18 extension (cholesky_solve accuracy gate, job j20261118130122_193ab3a6):
+# the native complex path aborts the same way for EVERY probed complex64 shape
+# (no Python exception, bare "Fatal Python error: Aborted" from topsaten; even
+# 16x16).  tests/test_cholesky_solve.py builds conditioned complex inputs with
+# torch.linalg.qr on the device, so the un-registered reference arm takes the
+# whole pytest process down before the op under test is ever reached.  Complex
+# dtypes therefore join the broken domain and route through CPU LAPACK under
+# the same not-registered guard; real (fp32/fp64) small shapes keep the native
+# path, and the registered (use_gems) passthrough semantics are unchanged.
 # ---------------------------------------------------------------------------
 _NATIVE_QR_SAFE_ROWS = 2560
 
@@ -2481,8 +2491,8 @@ def _install_native_qr_workspace_shim():
         if (
             isinstance(A, torch.Tensor)
             and A.dim() >= 2
-            and A.shape[-2] > _NATIVE_QR_SAFE_ROWS
             and A.device.type == "gcu"
+            and (A.shape[-2] > _NATIVE_QR_SAFE_ROWS or A.is_complex())
         ):
             try:
                 import flag_gems

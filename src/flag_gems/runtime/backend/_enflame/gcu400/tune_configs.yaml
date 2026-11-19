@@ -95,47 +95,47 @@ addmm:
   num_warps: 4
 bmm:
 - META:
-    BLOCK_M: 512
-    BLOCK_N: 512
-    BLOCK_K: 512
-  num_stages: 3
-  num_warps: 4
-- META:
-    BLOCK_M: 512
-    BLOCK_N: 512
-    BLOCK_K: 256
-  num_stages: 3
-  num_warps: 4
-- META:
-    BLOCK_M: 256
-    BLOCK_N: 512
-    BLOCK_K: 256
-  num_stages: 3
-  num_warps: 2
-- META:
     BLOCK_M: 256
     BLOCK_N: 256
     BLOCK_K: 256
-  num_stages: 3
+  num_stages: 2
+  num_warps: 4
+- META:
+    BLOCK_M: 256
+    BLOCK_N: 256
+    BLOCK_K: 128
+  num_stages: 2
   num_warps: 4
 - META:
     BLOCK_M: 128
     BLOCK_N: 256
     BLOCK_K: 256
-  num_stages: 3
+  num_stages: 2
   num_warps: 4
+- META:
+    BLOCK_M: 128
+    BLOCK_N: 256
+    BLOCK_K: 256
+  num_stages: 2
+  num_warps: 2
 - META:
     BLOCK_M: 128
     BLOCK_N: 128
-    BLOCK_K: 128
-  num_stages: 3
-  num_warps: 4
+    BLOCK_K: 256
+  num_stages: 2
+  num_warps: 2
+- META:
+    BLOCK_M: 64
+    BLOCK_N: 128
+    BLOCK_K: 256
+  num_stages: 2
+  num_warps: 2
 - META:
     BLOCK_M: 64
     BLOCK_N: 64
     BLOCK_K: 64
-  num_stages: 3
-  num_warps: 4
+  num_stages: 2
+  num_warps: 2
 baddbmm:
 - META:
     TILE_M: 128
@@ -878,42 +878,42 @@ conv2d_backward_weight:
     BLOCK_CO: 32
     BLOCK_NO: 32
   num_warps: 4
-  num_stages: 3
+  num_stages: 2
 - META:
     BLOCK_CI_HK_WK: 64
     BLOCK_CO: 32
     BLOCK_NO: 32
   num_warps: 4
-  num_stages: 3
+  num_stages: 2
 - META:
     BLOCK_CI_HK_WK: 64
     BLOCK_CO: 64
     BLOCK_NO: 32
   num_warps: 4
-  num_stages: 3
+  num_stages: 2
 - META:
     BLOCK_CI_HK_WK: 128
     BLOCK_CO: 32
     BLOCK_NO: 32
   num_warps: 4
-  num_stages: 3
+  num_stages: 2
 - META:
     BLOCK_CI_HK_WK: 128
     BLOCK_CO: 64
     BLOCK_NO: 32
   num_warps: 4
-  num_stages: 3
+  num_stages: 2
 - META:
     BLOCK_CI_HK_WK: 128
     BLOCK_CO: 128
     BLOCK_NO: 32
   num_warps: 4
-  num_stages: 3
+  num_stages: 2
 - META:
     BLOCK_CI_HK_WK: 128
     BLOCK_CO: 256
     BLOCK_NO: 32
-  num_stages: 3
+  num_stages: 2
   num_warps: 4
 batch_norm:
 - gen: true
@@ -1030,7 +1030,7 @@ linear:
       BLOCK_SIZE_M: 128
       BLOCK_SIZE_N: 256
       BLOCK_SIZE_K: 128
-    num_stages: 3
+    num_stages: 2
     num_warps: 2
   - META:
       BLOCK_SIZE_M: 128
@@ -1042,7 +1042,7 @@ linear:
       BLOCK_SIZE_M: 128
       BLOCK_SIZE_N: 256
       BLOCK_SIZE_K: 64
-    num_stages: 3
+    num_stages: 2
     num_warps: 2
   - META:
       BLOCK_SIZE_M: 64
@@ -1054,7 +1054,7 @@ linear:
       BLOCK_SIZE_M: 128
       BLOCK_SIZE_N: 128
       BLOCK_SIZE_K: 64
-    num_stages: 3
+    num_stages: 2
     num_warps: 2
 
 adaptive_max_pool3d:
@@ -1094,5 +1094,34 @@ adaptive_max_pool3d:
   - META:
       OUT_PER_BLOCK: 64
       CHAN_PER_BLOCK: 1
+    num_warps: 2
+    num_stages: 5
+
+adaptive_max_pool2d:
+  # gcu400: OUT_PER_BLOCK sweep, same ladder as adaptive_max_pool3d.  Both
+  # kernels (divisible fast path _adaptive_max_pool2d_div_kernel and the
+  # general _adaptive_max_pool2d_kernel) take OUT_PER_BLOCK from this list;
+  # KH/KW and MAX_WIN_H/MAX_WIN_W are bound at the call site.
+  # Without this entry the loader falls back to the nvidia default configs
+  # (BLOCK_H/BLOCK_W), which leaves OUT_PER_BLOCK unbound and the launch
+  # fails with "dynamic_func() missing 1 required positional argument".
+  - META:
+      OUT_PER_BLOCK: 1024
+    num_warps: 16
+    num_stages: 3
+  - META:
+      OUT_PER_BLOCK: 1024
+    num_warps: 8
+    num_stages: 3
+  - META:
+      OUT_PER_BLOCK: 256
+    num_warps: 8
+    num_stages: 3
+  - META:
+      OUT_PER_BLOCK: 128
+    num_warps: 4
+    num_stages: 4
+  - META:
+      OUT_PER_BLOCK: 64
     num_warps: 2
     num_stages: 5

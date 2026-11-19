@@ -58,47 +58,54 @@ def bilinear_kernel(
     Each program computes a single output element (m, o), reducing over the
     in1_features x in2_features grid in tiles to keep memory bounded.
     """
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    pid = tl.program_id(0)
+    num_pids = tl.num_programs(0)
+    total = M * N
 
-    acc = 0.0
-    for k1 in range(0, tl.cdiv(K1, BLOCK_K1)):
-        offs_k1 = k1 * BLOCK_K1 + tl.arange(0, BLOCK_K1)
-        mask_k1 = offs_k1 < K1
+    # Flattened pid-stride walk: gcu400 caps grid.y at 255 and the benchmark
+    # requests N = 256 output features, so a (M, N) grid cannot launch.
+    for linear in tl.range(pid, total, num_pids):
+        pid_m = linear // N
+        pid_n = linear % N
 
-        x1 = tl.load(
-            input1_ptr + pid_m * stride_i1m + offs_k1 * stride_i1k,
-            mask=mask_k1,
-            other=0.0,
-        ).to(tl.float32)
+        acc = 0.0
+        for k1 in range(0, tl.cdiv(K1, BLOCK_K1)):
+            offs_k1 = k1 * BLOCK_K1 + tl.arange(0, BLOCK_K1)
+            mask_k1 = offs_k1 < K1
 
-        for k2 in range(0, tl.cdiv(K2, BLOCK_K2)):
-            offs_k2 = k2 * BLOCK_K2 + tl.arange(0, BLOCK_K2)
-            mask_k2 = offs_k2 < K2
-
-            x2 = tl.load(
-                input2_ptr + pid_m * stride_i2m + offs_k2 * stride_i2k,
-                mask=mask_k2,
+            x1 = tl.load(
+                input1_ptr + pid_m * stride_i1m + offs_k1 * stride_i1k,
+                mask=mask_k1,
                 other=0.0,
             ).to(tl.float32)
 
-            w_ptrs = (
-                weight_ptr
-                + pid_n * stride_wn
-                + offs_k1[:, None] * stride_wk1
-                + offs_k2[None, :] * stride_wk2
-            )
-            w_mask = mask_k1[:, None] & mask_k2[None, :]
-            w = tl.load(w_ptrs, mask=w_mask, other=0.0).to(tl.float32)
+            for k2 in range(0, tl.cdiv(K2, BLOCK_K2)):
+                offs_k2 = k2 * BLOCK_K2 + tl.arange(0, BLOCK_K2)
+                mask_k2 = offs_k2 < K2
 
-            prod = x1[:, None] * w * x2[None, :]
-            acc += tl.sum(prod)
+                x2 = tl.load(
+                    input2_ptr + pid_m * stride_i2m + offs_k2 * stride_i2k,
+                    mask=mask_k2,
+                    other=0.0,
+                ).to(tl.float32)
 
-    if BIAS:
-        acc += tl.load(bias_ptr + pid_n).to(tl.float32)
+                w_ptrs = (
+                    weight_ptr
+                    + pid_n * stride_wn
+                    + offs_k1[:, None] * stride_wk1
+                    + offs_k2[None, :] * stride_wk2
+                )
+                w_mask = mask_k1[:, None] & mask_k2[None, :]
+                w = tl.load(w_ptrs, mask=w_mask, other=0.0).to(tl.float32)
 
-    output = acc.to(output_ptr.dtype.element_ty)
-    tl.store(output_ptr + pid_m * stride_om + pid_n * stride_on, output)
+                prod = x1[:, None] * w * x2[None, :]
+                acc += tl.sum(prod)
+
+        if BIAS:
+            acc += tl.load(bias_ptr + pid_n).to(tl.float32)
+
+        output = acc.to(output_ptr.dtype.element_ty)
+        tl.store(output_ptr + pid_m * stride_om + pid_n * stride_on, output)
 
 
 def bilinear(input1, input2, weight, bias=None):
@@ -115,7 +122,7 @@ def bilinear(input1, input2, weight, bias=None):
     Returns:
         Output tensor of shape (N, *, out_features)
     """
-    logger.debug("GEMS_ENFLAME_GCU400 BILINEAR")
+    logger.debug("GEMS_ENFLAME BILINEAR")
 
     # All but the last dimension of input1 and input2 must match.
     batch_dims = input1.shape[:-1]
@@ -135,7 +142,7 @@ def bilinear(input1, input2, weight, bias=None):
     BLOCK_K1 = min(triton.next_power_of_2(K1), 32)
     BLOCK_K2 = min(triton.next_power_of_2(K2), 32)
 
-    grid = (M, N)
+    grid = (min(M * N, 65535),)
 
     with torch_device_fn.device(input1.device):
         bilinear_kernel[grid](

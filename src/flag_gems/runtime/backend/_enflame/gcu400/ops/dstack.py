@@ -250,7 +250,7 @@ def _as_copy_tensor(tensor, real_dtype):
 
 def run(tensors, out=None, **kwargs):
     """``aten::dstack(Tensor[] tensors) -> Tensor``, plus the ``out=`` overload."""
-    logger.debug("GEMS_ENFLAME_GCU400 RUN")
+    logger.debug("GEMS_ENFLAME RUN")
     del kwargs
     items = [tensors] if isinstance(tensors, torch.Tensor) else list(tensors)
     if len(items) == 0:

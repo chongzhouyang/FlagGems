@@ -22,7 +22,7 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems import runtime
+from flag_gems import runtime  # noqa: F401
 
 try:
     from triton.knobs import autotuning as _autotuning_knobs
@@ -1083,7 +1083,7 @@ def flash_attn_backward(
     bias_requires_grad=False,
 ):
     if is_dropout and dropout_p > 0.0 and rng_state is None:
-        raise ValueError("rng_state must be provided when dropout is enabled")
+        raise ValueError("开启 dropout 时，必须传入 rng_state")
 
     is_varlen = (cu_seq_q is not None) and (cu_seq_k is not None)
 
@@ -1098,7 +1098,7 @@ def flash_attn_backward(
         _, SeqLen_k, H_k, _ = K.shape
 
     if H_q % H_k != 0:
-        raise ValueError(f"H_q ({H_q}) must be an integer multiple of H_k ({H_k})")
+        raise ValueError(f"H_q ({H_q}) 必须是 H_k ({H_k}) 的整数倍")
     group_size = H_q // H_k
     scale = softmax_scale if softmax_scale is not None else (1.0 / math.sqrt(Head_Dim))
 
@@ -1395,7 +1395,7 @@ def flash_attention_backward(
     window_size_left=None,
     window_size_right=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 FLASH_ATTENTION_BACKWARD")
+    logger.debug("GEMS_ENFLAME FLASH_ATTENTION_BACKWARD")
     is_dropout = dropout_p > 0.0
     rng_tuple = _parse_rng_state(rng_state, unused) if is_dropout else None
     wl = -1 if window_size_left is None else int(window_size_left)
@@ -1440,7 +1440,7 @@ def scaled_dot_product_flash_attention_backward(
     *,
     scale=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 SCALED_DOT_PRODUCT_FLASH_ATTENTION_BACKWARD")
+    logger.debug("GEMS_ENFLAME SCALED_DOT_PRODUCT_FLASH_ATTENTION_BACKWARD")
     is_dropout = dropout_p > 0.0
     rng_tuple = _parse_philox(philox_seed, philox_offset) if is_dropout else None
     use_varlen = (cum_seq_q is not None) and (cum_seq_k is not None)
@@ -1504,7 +1504,7 @@ def scaled_dot_product_cudnn_attention_backward(
     scale=None,
     bias_requires_grad=False,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 SCALED_DOT_PRODUCT_CUDNN_ATTENTION_BACKWARD")
+    logger.debug("GEMS_ENFLAME SCALED_DOT_PRODUCT_CUDNN_ATTENTION_BACKWARD")
     grad_out_bshd = grad_out.permute(0, 2, 1, 3).contiguous()
     query_bshd = query.permute(0, 2, 1, 3).contiguous()
     key_bshd = key.permute(0, 2, 1, 3).contiguous()
@@ -1565,7 +1565,7 @@ def efficient_attention_backward(
     window_size=None,
     shared_storage_dqdkdv=False,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 EFFICIENT_ATTENTION_BACKWARD")
+    logger.debug("GEMS_ENFLAME EFFICIENT_ATTENTION_BACKWARD")
     if custom_mask_type == 0:
         is_causal, wl, wr = False, -1, -1
     elif custom_mask_type == 1:
@@ -1575,7 +1575,7 @@ def efficient_attention_backward(
         wl = 0
         wr = max_seqlen_q + max_seqlen_k + 1
     else:
-        raise ValueError(f"unknown custom_mask_type: {custom_mask_type}")
+        raise ValueError(f"未知 custom_mask_type: {custom_mask_type}")
 
     if window_size is not None and window_size >= 0:
         wl = wr = window_size
@@ -1622,7 +1622,7 @@ def scaled_dot_product_efficient_attention_backward(
     *,
     scale=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 SCALED_DOT_PRODUCT_EFFICIENT_ATTENTION_BACKWARD")
+    logger.debug("GEMS_ENFLAME SCALED_DOT_PRODUCT_EFFICIENT_ATTENTION_BACKWARD")
     need_dq, need_dk, need_dv, need_dbias = grad_input_mask
 
     grad_out_bshd = grad_out_.permute(0, 2, 1, 3).contiguous()
@@ -1688,37 +1688,6 @@ def scaled_dot_product_efficient_attention_backward(
 # ---------------------------------------------------------------------------
 _FLASH_ATTN_BWD_KEY_FLAG = "_flag_gems_gcu400_flash_attn_bwd_keys_registered"
 _FLASH_ATTN_BWD_LIBRARY = None
-
-
-def _ensure_flash_attn_bwd_key_registrations():
-    global _FLASH_ATTN_BWD_LIBRARY
-    if getattr(torch, _FLASH_ATTN_BWD_KEY_FLAG, False):
-        return
-    _FLASH_ATTN_BWD_LIBRARY = torch.library.Library("aten", "IMPL")
-    for aten_name, impl_fn in (
-        ("_flash_attention_backward", flash_attention_backward),
-        (
-            "_scaled_dot_product_cudnn_attention_backward",
-            scaled_dot_product_cudnn_attention_backward,
-        ),
-        ("_efficient_attention_backward", efficient_attention_backward),
-    ):
-        try:
-            _FLASH_ATTN_BWD_LIBRARY.impl(
-                aten_name, impl_fn, runtime.device.dispatch_key
-            )
-        except RuntimeError as error:
-            logger.warning(
-                "%s: aten registration %s@%s skipped: %s",
-                aten_name,
-                aten_name,
-                runtime.device.dispatch_key,
-                error,
-            )
-    setattr(torch, _FLASH_ATTN_BWD_KEY_FLAG, True)
-
-
-_ensure_flash_attn_bwd_key_registrations()
 
 
 # ---------------------------------------------------------------------------

@@ -11,38 +11,53 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""GCU400 专属 ``_foreach_sign`` / ``_foreach_sign_``：len==1 flat 臂 + 委托执行器。
 
-"""GCU400-specific ``_foreach_sign``: per-tensor 1D flat kernel.
+历史实现逐 tensor 发起一维 flat kernel：16 tensor 列表每次调用 16 条
+``@libentry`` host 分发（~15us/条），官方 bench core 9 cell 候选延迟恒定
+在 150-247us、与 shape/dtype 无关（2026-11-18 复测：out-of-place 均值
+0.307x、in-place 均值 0.424x），1024^2 档约为 1R1W 内存地板的 10 倍。
+多 tensor 列表改走本目录 ``_foreach_unary.py`` 的 lean 单 launch 路由
+（公共 bulk 路径 host ~55us，lean ~8us；表内 ``_sign_func`` 的
+``(x > 0) - (x < 0)`` 体与历史 kernel 的 fp32 提升三路 where 语义逐位
+一致：NaN/+-0 -> 0，+-inf -> +-1），单 kernel 契约不破。
 
-The common ``foreach_unary`` executor relies on a device-side chunk table and a 2D grid, which on GCU400
-needs int64 pointer tables and easily exceeds the grid.y limit of 255. This uses a per-tensor
-1D fixed grid with in-kernel striding and fp32 computation for accuracy consistent with the common implementation.
+改后官方 bench core（kernel 模式，三轮 fresh）：out-of-place 9 cell 均值
+0.307x -> 3.552/3.743x、in-place 0.424x -> 4.175/4.150x，绝对延迟
+240/151us -> 8-63us 且随 shape 正常伸缩（256^2 贴 abs 同族地板 8-11us，
+1024^2 fp16 48.1us 反超 abs 62.3us）；len>=2 与 len==1 两臂各一次
+launch，单 kernel 契约不破。
+
+单 tensor 列表保留 flat 专用臂：lean 路由按 dtype 放大 BLOCK（16-bit
+131072 / 32-bit 65536），len==1 档只给 1-8 个 CTA，list_length 轴实测
+劣于 flat kernel（BLOCK 2048 x grid<=48）4.7-12.2us 的量级（同表
+``_foreach_sin`` 2026-11-18 判例）。
+
+非浮点、非连续、mixed dtype/device 与 complex 输入由本地执行器回落
+公共分组路径，dtype 提升与异常语义（空列表/非 Tensor 元素对齐 ATen）
+保持不变。
 """
 
 import logging
-from contextlib import nullcontext
 
 import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops._foreach_unary import apply_unary
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
+
+from ._foreach_unary import apply_unary
 
 logger = logging.getLogger(__name__)
 
 # --- TUNING PARAMS START ---
-
-
-# Generated per round by the optimization driver script; compile-time / launch-time config, semantics unchanged.
-FIXED_GRID = 48
-BLOCK_SIZE = 1024
-NUM_WARPS = 4
-NUM_STAGES = 1
-USE_DEVICE_CONTEXT = 1
-REVERSE_LAUNCH_ORDER = 0
-FALLBACK_TO_PUBLIC = 0
+# Best measured configuration for the single-tensor flat arm (same setting as _foreach_sin on 2026-11-18:
+# 256^2-1024^2 x fp16/fp32 len=1, all tiers 4.7-12.2us).
+FLAT_BLOCK = 2048
+FLAT_FIXED_GRID = 48
+FLAT_NUM_WARPS = 4
+FLAT_NUM_STAGES = 1
 # --- TUNING PARAMS END ---
 
 _FLOAT_DTYPES = (torch.float16, torch.float32, torch.bfloat16)
@@ -53,10 +68,10 @@ _FLOAT_DTYPES = (torch.float16, torch.float32, torch.bfloat16)
 def _foreach_sign_flat_kernel(
     in_ptr, out_ptr, N, BLOCK: tl.constexpr, FIXED_GRID: tl.constexpr
 ):
-    """1D fixed grid with striding for elementwise sign.
+    """一维固定 grid 跨步执行逐元素 sign（len==1 臂专用）。
 
-    in_ptr and out_ptr differ only in the out-of-place variant; avoiding a host-side clone prevents
-    hitting the grid.x limit of the torch_gcu copy kernel on very large tensors.
+    in_ptr 与 out_ptr 只在 out-of-place 变体下不同；fp32 提升后的三路
+    where 与执行器表内 ``_sign_func`` 逐位一致（NaN 两侧比较均假 -> 0）。
     """
     arange = tl.arange(0, BLOCK)
     pid = tl.program_id(0)
@@ -69,70 +84,48 @@ def _foreach_sign_flat_kernel(
         tl.store(out_ptr + offs, result, mask=mask)
 
 
-def _can_use_flat_kernel(self):
-    """Accept only non-empty lists of contiguous float tensors."""
-    if len(self) == 0:
-        return False
-    try:
-        for tensor in self:
-            if tensor.dtype not in _FLOAT_DTYPES or tensor.dtype.is_complex:
-                return False
-            if not tensor.is_contiguous():
-                return False
-    except AttributeError:
-        # Non-Tensor elements: return False so the caller falls back to the common apply_unary for matching exceptions.
-        return False
-    return True
+def _single_tensor_ok(tensor):
+    """len==1 flat 臂的进入条件：非空连续浮点 tensor。
 
-
-def _run_flat_kernel(self, inplace):
-    if FALLBACK_TO_PUBLIC or not _can_use_flat_kernel(self):
-        return apply_unary("sign", self, inplace)
-    tensors = list(self)
-    if not tensors:
-        return [] if not inplace else None
-
-    # Reversing only changes launch order; out-of-place outputs must keep the same order as the original list.
-    launch_indices = list(range(len(tensors)))
-    if REVERSE_LAUNCH_ORDER:
-        launch_indices.reverse()
-    outputs = [None] * len(tensors) if not inplace else None
-    device_context = (
-        torch_device_fn.device(tensors[0].device)
-        if USE_DEVICE_CONTEXT
-        else nullcontext()
+    其余形态（非 Tensor 元素、整型/bool/complex、非连续、空张量）全部
+    交给 ``apply_unary``，由其统一异常转换与分组回退对齐 ATen 语义。
+    """
+    return (
+        isinstance(tensor, torch.Tensor)
+        and tensor.dtype in _FLOAT_DTYPES
+        and not tensor.dtype.is_complex
+        and tensor.is_contiguous()
+        and tensor.numel() > 0
     )
-    with device_context:
-        for index in launch_indices:
-            tensor = tensors[index]
-            num_elems = tensor.numel()
-            out_tensor = tensor if inplace else torch.empty_like(tensor)
-            # Empty tensors have no elements, so skip the kernel launch; but the empty result must still be kept
-            # in the output list to stay one-to-one with the input (foreach returns as many tensors as it receives).
-            if num_elems == 0:
-                if not inplace:
-                    outputs[index] = out_tensor
-                continue
-            grid = (min(triton.cdiv(num_elems, BLOCK_SIZE), FIXED_GRID),)
-            _foreach_sign_flat_kernel[grid](
-                tensor,
-                out_tensor,
-                num_elems,
-                BLOCK_SIZE,
-                FIXED_GRID,
-                num_warps=NUM_WARPS,
-                num_stages=NUM_STAGES,
-            )
-            if not inplace:
-                outputs[index] = out_tensor
-    return None if inplace else outputs
+
+
+def _run_single_flat(tensor, inplace):
+    """单 tensor 一次 flat launch：in-place 直接写回，oop 分配新输出。"""
+    out_tensor = tensor if inplace else torch.empty_like(tensor)
+    num_elems = tensor.numel()
+    grid = (min(triton.cdiv(num_elems, FLAT_BLOCK), FLAT_FIXED_GRID),)
+    with torch_device_fn.device(tensor.device):
+        _foreach_sign_flat_kernel[grid](
+            tensor,
+            out_tensor,
+            num_elems,
+            FLAT_BLOCK,
+            FLAT_FIXED_GRID,
+            num_warps=FLAT_NUM_WARPS,
+            num_stages=FLAT_NUM_STAGES,
+        )
+    return None if inplace else [out_tensor]
 
 
 def _foreach_sign(self):
     logger.debug("GEMS_GCU400 _FOREACH_SIGN")
-    return _run_flat_kernel(self, inplace=False)
+    if len(self) == 1 and _single_tensor_ok(self[0]):
+        return _run_single_flat(self[0], inplace=False)
+    return apply_unary("sign", self, inplace=False)
 
 
 def _foreach_sign_(self):
     logger.debug("GEMS_GCU400 _FOREACH_SIGN_")
-    return _run_flat_kernel(self, inplace=True)
+    if len(self) == 1 and _single_tensor_ok(self[0]):
+        return _run_single_flat(self[0], inplace=True)
+    return apply_unary("sign", self, inplace=True)

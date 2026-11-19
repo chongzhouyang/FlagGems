@@ -25,33 +25,40 @@ from flag_gems.runtime import device
 logger = logging.getLogger(__name__)
 
 
+MAX_GRID = 48
+
+
 @triton.jit
 def _fix_trunc_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
+    num_pids = tl.num_programs(axis=0)
+    num_blocks = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
 
-    x = tl.load(x_ptr + offsets, mask=mask)
+        x = tl.load(x_ptr + offsets, mask=mask)
 
-    # Upcast to fp32 for stable math, then cast back to input dtype
-    x_fp32 = x.to(tl.float32)
-    res_pos = tl.floor(x_fp32)
-    res_neg = tl.ceil(x_fp32)
-    res_fp32 = tl.where(x_fp32 >= 0, res_pos, res_neg)
-    res = res_fp32.to(x.dtype)
+        # Upcast to fp32 for stable math, then cast back to input dtype
+        x_fp32 = x.to(tl.float32)
+        res_pos = tl.floor(x_fp32)
+        res_neg = tl.ceil(x_fp32)
+        res_fp32 = tl.where(x_fp32 >= 0, res_pos, res_neg)
+        res = res_fp32.to(x.dtype)
 
-    tl.store(out_ptr + offsets, res, mask=mask)
+        tl.store(out_ptr + offsets, res, mask=mask)
 
 
 @triton.jit
 def _copy_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
-    x = tl.load(x_ptr + offsets, mask=mask)
-    tl.store(out_ptr + offsets, x, mask=mask)
+    num_pids = tl.num_programs(axis=0)
+    num_blocks = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+        x = tl.load(x_ptr + offsets, mask=mask)
+        tl.store(out_ptr + offsets, x, mask=mask)
 
 
 def _launch_fix_kernel(x: torch.Tensor, out: torch.Tensor, block_size: int = 1024):
@@ -67,7 +74,7 @@ def _launch_fix_kernel(x: torch.Tensor, out: torch.Tensor, block_size: int = 102
     ), "Only contiguous tensors are supported"
 
     n_elements = x.numel()
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    grid = (min(triton.cdiv(n_elements, block_size), MAX_GRID),)
 
     # For floating point types, perform truncation toward zero.
     # For non-floating types, it's effectively a no-op (copy).
@@ -78,7 +85,7 @@ def _launch_fix_kernel(x: torch.Tensor, out: torch.Tensor, block_size: int = 102
 
 
 def fix(self: torch.Tensor):
-    logger.debug("GEMS_ENFLAME_GCU400 FIX")
+    logger.debug("GEMS_ENFLAME FIX")
     """
     Wrapper for ATen operator: ('fix', <Autograd.disable: False>)
     Rounds elements toward zero (like trunc) for floating tensors.

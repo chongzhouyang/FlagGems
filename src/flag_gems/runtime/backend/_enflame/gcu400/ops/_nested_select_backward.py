@@ -22,6 +22,13 @@ import triton.language as tl
 
 logger = logging.getLogger(__name__)
 
+try:  # Construct the jagged NestedTensor directly to save one aten dispatch
+    from torch.nested._internal.nested_tensor import NestedTensor as _NestedTensor
+except (
+    Exception
+):  # pragma: no cover - fall back when older torch lacks this internal class
+    _NestedTensor = None
+
 
 @triton.jit
 def _nested_select_backward_kernel(
@@ -54,7 +61,7 @@ def _nested_select_backward(grad, self, dim, index):
     PyTorch autograd; selecting along ragged or dense dimensions is not
     supported for nested tensors.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 _NESTED_SELECT_BACKWARD")
+    logger.debug("GEMS_ENFLAME _NESTED_SELECT_BACKWARD")
     if not self.is_nested:
         raise ValueError(
             "_nested_select_backward expects `self` to be a nested tensor."
@@ -73,8 +80,8 @@ def _nested_select_backward(grad, self, dim, index):
     num_components = offsets.numel() - 1
     if index < 0:
         index += num_components
-    start = int(offsets[index].item())
-    end = int(offsets[index + 1].item())
+    # Fetch both boundaries in one go: per-element .item() would trigger a device->host sync each time.
+    start, end = offsets[index : index + 2].tolist()
 
     grad = grad.contiguous()
     n_cols = buffer.shape[-1] if buffer.dim() > 1 else 1
@@ -89,4 +96,19 @@ def _nested_select_backward(grad, self, dim, index):
         grad, out, start, end, n_cols, total, BLOCK_SIZE=BLOCK_SIZE
     )
 
-    return torch.nested.nested_tensor_from_jagged(out, offsets=offsets)
+    # Construct the jagged NestedTensor wrapper directly, saving the aten
+    # round-trip through `nested_tensor_from_jagged` (measured ~40us/call); fall back to the official entry point on
+    # construction failure.
+    try:
+        if _NestedTensor is None:
+            raise RuntimeError(
+                "torch.nested._internal.nested_tensor.NestedTensor unavailable"
+            )
+        return _NestedTensor(out, offsets)
+    except Exception:
+        logger.debug(
+            "GEMS _NESTED_SELECT_BACKWARD: direct NestedTensor build failed, "
+            "falling back to nested_tensor_from_jagged",
+            exc_info=True,
+        )
+        return torch.nested.nested_tensor_from_jagged(out, offsets=offsets)

@@ -20,6 +20,7 @@ import triton
 import triton.language as tl
 
 from flag_gems.runtime import torch_device_fn
+from flag_gems.utils import triton_lang_extension as tle
 from flag_gems.utils.device_info import get_device_capability
 
 if torch_device_fn.is_available() and get_device_capability() >= (9, 0):
@@ -228,12 +229,66 @@ def _per_token_group_quant_fp8_colmajor_vec(
     tl.store(y_s_ptr + scale_offsets, y_s)
 
 
+@triton.jit
+def _per_token_group_quant_fp8_flat(
+    y_ptr,
+    y_q_ptr,
+    y_s_ptr,
+    group_size,
+    eps,
+    fp8_min,
+    fp8_max,
+    scale_ue8m0,
+    num_groups,
+    BLOCK: tl.constexpr,
+    NGROUPS: tl.constexpr,
+):
+    """Flat quantization: treat the whole tensor as num_groups contiguous groups.
+
+    Groups are contiguous in memory (x rows are contiguous and group_size divides
+    the last dim), so the divisibility constraint on groups_per_row is unnecessary
+    and NGROUPS can be raised to any value to shrink the program count.
+    """
+    pid = tle.program_id(0) + tle.program_id(1) * tle.num_programs(0)
+    group_ids = pid * NGROUPS + tl.arange(0, NGROUPS)
+    group_mask = group_ids < num_groups
+
+    cols = tl.arange(0, BLOCK)
+    col_mask = cols < group_size
+    offsets = group_ids[:, None] * group_size + cols[None, :]
+    mask = group_mask[:, None] & col_mask[None, :]
+
+    y = tl.load(y_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+    absmax = tl.maximum(tl.max(tl.abs(y), axis=1), eps)
+    y_s = absmax / fp8_max
+    if scale_ue8m0:
+        y_s = tl.exp2(tl.ceil(tl.log2(tl.maximum(tl.abs(y_s), 1e-10))))
+        y_q = tl.clamp(y / y_s[:, None], fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
+    else:
+        y_q = tl.clamp((y / absmax[:, None]) * fp8_max, fp8_min, fp8_max).to(
+            y_q_ptr.dtype.element_ty
+        )
+
+    tl.store(y_q_ptr + offsets, y_q, mask=mask)
+    tl.store(y_s_ptr + group_ids, y_s, mask=group_mask)
+
+
 def _groups_per_program(x: torch.Tensor, group_size: int) -> int:
     groups_per_row = x.shape[-1] // group_size
     for groups in (8, 4, 2):
         if groups_per_row % groups == 0:
             return groups
     return 1
+
+
+def _flat_groups_per_program(num_groups: int) -> int:
+    """Groups handled by one program on the flat path (more groups means more
+    traffic per program)."""
+    if num_groups <= 32:
+        return 1
+    if num_groups <= 256:
+        return 16
+    return 16
 
 
 def per_token_group_quant_fp8(
@@ -244,7 +299,7 @@ def per_token_group_quant_fp8(
     column_major_scales: bool = False,
     scale_ue8m0: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    logger.debug("GEMS_ENFLAME_GCU400 PER_TOKEN_GROUP_QUANT_FP8")
+    logger.debug("GEMS_ENFLAME PER_TOKEN_GROUP_QUANT_FP8")
     fp8_dtype = SUPPORTED_FP8_DTYPE if dtype is None else dtype
     assert x.shape[-1] % group_size == 0, (
         f"the last dimension of `x` {x.shape[-1]} must be divisible "
@@ -268,6 +323,33 @@ def per_token_group_quant_fp8(
 
     block = triton.next_power_of_2(group_size)
     num_warps = min(max(block // 256, 1), 8)
+
+    # With contiguous rows (x is a contiguous tensor) and a row-major scale, the
+    # whole tensor is num_groups contiguous groups, so the flat kernel can move
+    # several groups per program.
+    if x.is_contiguous() and not column_major_scales:
+        groups_per_program = _flat_groups_per_program(num_groups)
+        flat_blocks = triton.cdiv(num_groups, groups_per_program)
+        flat_grid_y = triton.cdiv(flat_blocks, 65535)
+        _per_token_group_quant_fp8_flat[
+            (triton.cdiv(flat_blocks, flat_grid_y), flat_grid_y)
+        ](
+            x,
+            x_q,
+            x_s,
+            group_size,
+            eps,
+            fp8_min=fp8_min,
+            fp8_max=fp8_max,
+            scale_ue8m0=scale_ue8m0,
+            num_groups=num_groups,
+            BLOCK=block,
+            NGROUPS=groups_per_program,
+            num_warps=8,
+            num_stages=1,
+        )
+        return x_q, x_s
+
     groups_per_program = _groups_per_program(x, group_size)
     grid = (num_groups // groups_per_program,)
 

@@ -149,10 +149,19 @@ def index_select(inp, dim, index):
         out = torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
         if not inp.is_contiguous():
             inp = inp.contiguous()
-        # grid.x is fixed to match the GCU compute unit count: full expansion (grid.x=total_p) measured
-        # 0.66x worse (too many CTAs, scheduling overhead); a fixed 48 with a stride loop is optimal.
+        # Fix grid.x to match the number of GCU compute units: full expansion (grid.x=total_p) was measured to regress
+        # by 0.66x (too many CTA, scheduling overhead); fixing at 48 with a strided loop is optimal.
         grid_x = min(total_p, MAX_GRID_DIM)
         block_i = min(triton.next_power_of_2(inner), 1024)
+        warps = 4 if inner >= 8192 else 2
+        if inner >= 16384:
+            # Very large inner (contiguous run per row >= 16384 elements, e.g. dim=0 selection on 1024x65536)
+            # is a pure DMA-bandwidth scenario: double each CTA's contiguous run to 2048 and raise the CTA count from 48
+            # to 96 (GCU400 can accommodate it); 2 warps are enough to saturate DMA. Measured on this shape:
+            # 1432us -> 1308us (+9.5%).
+            block_i = 2048
+            warps = 2
+            grid_x = min(total_p, 96)
         index_select_contiguous_kernel[
             (grid_x, min(triton.cdiv(inner, block_i), GCU_MAX_GRID_Y))
         ](
@@ -166,14 +175,14 @@ def index_select(inp, dim, index):
             block_i,
             grid_x,
             outer == 1,
-            # Large inner (a single contiguous transfer >= 8192 elements) has higher throughput with 4 warps,
-            # while small/medium inner uses 2 warps for cheaper launch / occupancy (measured better than a single value
-            # for all paths).
-            num_warps=4 if inner >= 8192 else 2,
+            # Large inner (single contiguous transfer >= 8192 elements) achieves higher throughput with 4 warps,
+            # small/medium inner is more economical with 2 warps for launch/occupancy (measured: split paths beat a
+            # single value).
+            num_warps=warps,
         )
         return out
 
-    # with dim_compress (when dim == last it is an identity permute, no copy)
+    # with dim_compress (when dim == last this is an identity permute, no copy)
     inp = dim_compress(inp, dim)
     M = inp.numel() // N
     out_shape = list(inp.shape)

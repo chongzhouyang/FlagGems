@@ -11,19 +11,30 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""GCU400 专属 ``_foreach_lerp(.Scalar/.ScalarList)`` 一维融合实现。
 
-"""GCU400-specific 1D fused implementation of ``_foreach_lerp_.ScalarList``.
+公共 ``foreach_ternary`` 执行器以二维 ``grid=(block, tensor)`` 启动，
+GCU400 的 ``grid.y`` 硬件上限为 255；``_flat_ternary`` 的一维化
+``grid=min(24, nt*parts)`` 在 grid 不整除张量数时还会漏写尾部 tensor 的
+tile（nt=16 时 24%16!=0，tensor 8-15 漏一半 tile）。本文件按
+``_foreach_lerp__List`` 的恒整除构造重写两类标量权重路径，一次 launch
+完成整个列表：
 
-The common ``foreach_ternary`` executor encodes the tensor list into metadata and launches a 2D
-``grid=(block, tensor)``; GCU400 has a ``grid.y`` hardware limit of 255,
-so 16 tensors of 512x512 need ``grid.y=256`` and the benchmark fails with
-``OutOfResources``. Here ``grid.x`` is linearized over ``(tensor, part)`` and
-the whole list is processed in one launch; non-float, non-contiguous, mixed dtype and broadcast
-shapes still fall back to the common executor, keeping dtype policy and exception semantics unchanged.
+1. ``grid = NT * PARTS`` 恒为张量数的整倍数，每个 tensor 恰有 ``PARTS``
+   个 program 以 ``PARTS`` 为步长分摊 tile，覆盖洞按构造不存在；
+2. ``.Scalar`` 广播标量以 fp32 by-value 参数进 kernel（零 H2D、零标量表），
+   不再绕道 ``_flat_ternary`` 的 24-grid 家族洞；
+3. ``.ScalarList`` 逐 tensor 权重以 fp32 位模式打包进 int64 metadata，
+   与地址/元素数一起经公共 ``_device_meta`` 只读缓存（稳态零 H2D）；
+4. fp32 输入启用满块免 mask 分裂循环（尾 tile 由单一 program 按掩码收尾），
+   16-bit 复测反劣 3-5%，保持整块 mask 循环。
+
+非浮点、非连续、混合 dtype、跨设备、0-d 标量等形态仍由调用方回退公共
+执行器，dtype policy 与异常语义不变。
 """
 
 import logging
-from contextlib import nullcontext
+import struct
 from typing import Dict, Tuple
 
 import torch
@@ -31,230 +42,220 @@ import triton
 import triton.language as tl
 
 from flag_gems.utils import libentry
+from flag_gems.utils.foreach import _device_meta
+
+from ._foreach_flat import _TL_DTYPES, FLOAT_DTYPES
 
 logger = logging.getLogger(__name__)
 
-FLOAT_DTYPES = (torch.float16, torch.float32, torch.bfloat16)
-_TL_DTYPES = {
-    torch.float16: tl.float16,
-    torch.float32: tl.float32,
-    torch.bfloat16: tl.bfloat16,
-}
-
-# Returned when the fast path is not applicable, so the caller delegates to the common executor.
-FALLBACK = object()
-
 # --- TUNING PARAMS START (foreach_lerp_scalar_list_) ---
-# Injected per round by the optimization sweep; all compile-time / launch-time config, semantics unchanged.
-LERP_SCALAR_LIST_TUNING = {
-    "enabled": 1,
-    "fused": 1,
-    "fixed_grid": 48,
-    "block_size": 8192,
-    "num_warps": 4,
-    "num_stages": 1,
-    "fp32_promote": 1,
-    "cache_meta": 1,
-}
+# Geometry sweep (new stack Triton GCU 4.1.6, 26 configurations interleaved over P{1..6}xB{4096..32768})
+# Confirmed P3B8192w4s1 as the best overall (31.4µs, runner-up P3B16384 33.2µs), matching
+# the ``_foreach_lerp__List`` / addcdiv family convention; all are compile-time/launch-time settings,
+# without changing operator semantics.
+FAST_PARTS_CAP = 3
+FAST_BLOCK = 8192
+FAST_WARPS = 4
+FAST_STAGES = 1
+FP32_PROMOTE = 1
+FP32_MASK_FREE = 1
+FALLBACK_TO_PUBLIC = 0
 # --- TUNING PARAMS END (foreach_lerp_scalar_list_) ---
 
-# do_bench repeatedly calls the same group of tensors; metadata depends only on addresses / numel / weights.
-# A cache hit avoids two host-to-device small-tensor constructions; the key includes all addresses, so
-# reused addresses with changed contents stay correct, and the cache cap avoids long-term residency.
-_META_CACHE: Dict[Tuple, Tuple[torch.Tensor, torch.Tensor]] = {}
-_META_CACHE_MAX = 64
+# GCU400 grid.x hard limit; the fast-path grid = NT * PARTS must stay entirely within the limit.
+_MAX_GRID_X = 65535
+
+# Return this sentinel when the fast path is unsuitable and let the caller delegate to the common executor.
+FALLBACK = object()
+
+# Read-only cache of fp32 bit patterns for per-tensor weights: benchmark steady-state weights are unchanged, so a hit
+# avoids struct packing on every call; out-of-range scalars (fp32 overflow) return None and are handed back to
+# the common executor. The key is a pure Python numeric value and contains no tensor data.
+_WEIGHT_BITS_CACHE: Dict[Tuple, list] = {}
+_WEIGHT_BITS_CACHE_MAX = 64
 
 
-def _build_launch_data(self, tensors1, out_tensors, weight):
-    """Return (int64 metadata, fp32 weights); reuse device-side tensors on a cache hit."""
-    key = (
-        tuple(tensor.data_ptr() for tensor in self),
-        tuple(tensor.data_ptr() for tensor in out_tensors),
-        tuple(tensor.data_ptr() for tensor in tensors1),
-        tuple(tensor.numel() for tensor in self),
-        tuple(float(value) for value in weight),
-        self[0].dtype,
-        self[0].device,
-    )
-    cached = _META_CACHE.get(key)
+def _weight_bits(weight):
+    key = tuple(float(value) for value in weight)
+    cached = _WEIGHT_BITS_CACHE.get(key)
     if cached is not None:
         return cached
-    meta = torch.tensor(
-        [tensor.data_ptr() for tensor in self]
-        + [tensor.data_ptr() for tensor in out_tensors]
-        + [tensor.data_ptr() for tensor in tensors1]
-        + [tensor.numel() for tensor in self],
-        dtype=torch.int64,
-        device=self[0].device,
-    )
-    weights = torch.tensor(
-        [float(value) for value in weight],
-        dtype=torch.float32,
-        device=self[0].device,
-    )
-    if len(_META_CACHE) >= _META_CACHE_MAX:
-        _META_CACHE.clear()
-    _META_CACHE[key] = (meta, weights)
-    return meta, weights
-
-
-@libentry()
-@triton.jit(do_not_specialize=["N"])
-def lerp_flat_kernel(
-    a_ptr,
-    b_ptr,
-    out_ptr,
-    weight,
-    N,
-    FP32_PROMOTE: tl.constexpr,
-    BLOCK: tl.constexpr,
-):
-    """Per-tensor 1D strided lerp, kept as a reference implementation for the non-fused path."""
-    arange = tl.arange(0, BLOCK)
-    pid = tl.program_id(0)
-    num_programs = tl.num_programs(0)
-    for block_id in tl.range(pid, tl.cdiv(N, BLOCK), num_programs):
-        offs = block_id * BLOCK + arange
-        mask = offs < N
-        a = tl.load(a_ptr + offs, mask=mask)
-        b = tl.load(b_ptr + offs, mask=mask)
-        if FP32_PROMOTE:
-            # Promote low precision to fp32 for computation, then implicitly cast back to the output dtype on store.
-            a = a.to(tl.float32)
-            b = b.to(tl.float32)
-        tl.store(out_ptr + offs, a + weight * (b - a), mask=mask)
+    try:
+        bits = [struct.unpack("<i", struct.pack("<f", value))[0] for value in key]
+    except OverflowError:
+        return None
+    if len(_WEIGHT_BITS_CACHE) >= _WEIGHT_BITS_CACHE_MAX:
+        _WEIGHT_BITS_CACHE.clear()
+    _WEIGHT_BITS_CACHE[key] = bits
+    return bits
 
 
 @libentry()
 @triton.jit
 def fused_lerp_scalar_list_kernel(
     meta_ptr,
-    weight_ptr,
+    weight,
     NT: tl.constexpr,
     A_DT: tl.constexpr,
     FP32_PROMOTE: tl.constexpr,
+    WEIGHT_MODE: tl.constexpr,
+    MASK_FREE: tl.constexpr,
     BLOCK: tl.constexpr,
+    PARTS: tl.constexpr,
 ):
-    """Lerp over the whole list in one launch.
+    """一次 launch 对整个列表做 ``self + weight * (tensors1 - self)``。
 
-    ``meta_ptr`` holds input pointers, output pointers, second-operand pointers and element counts
-    (NT entries each, int64); ``weight_ptr`` holds one fp32 weight per tensor.
-    ``grid.x`` is linearized over ``(tensor, part)`` to bypass the grid.y limit of 255.
+    ``meta_ptr`` 依次存放输入、输出、第二操作数地址与元素数（各 NT 项，
+    int64）；``WEIGHT_MODE=1`` 时 ``weight`` 是广播 fp32 标量，为 0 时
+    第 5 段存放逐 tensor 的 fp32 位模式。grid 按 ``(tensor, part)`` 展开
+    且恒为 ``NT * PARTS``：每个 tensor 的 ``PARTS`` 个 program 以
+    ``PARTS`` 为步长分摊 tile，覆盖洞按构造不存在。
     """
     pid = tl.program_id(0)
-    num_programs = tl.num_programs(0)
     tensor_id = pid % NT
     part_id = pid // NT
-    num_parts = tl.cdiv(num_programs, NT)
 
-    a_raw = tl.load(meta_ptr + tensor_id)
-    out_raw = tl.load(meta_ptr + NT + tensor_id)
-    b_raw = tl.load(meta_ptr + 2 * NT + tensor_id)
-    num_elems = tl.load(meta_ptr + 3 * NT + tensor_id)
-
-    a_ptr = a_raw.to(tl.pointer_type(A_DT))
-    out_ptr = out_raw.to(tl.pointer_type(A_DT))
-    b_ptr = b_raw.to(tl.pointer_type(A_DT))
-    weight = tl.load(weight_ptr + tensor_id)
+    a_ptr = tl.load(meta_ptr + tensor_id).to(tl.pointer_type(A_DT))
+    out_ptr = tl.load(meta_ptr + NT + tensor_id).to(tl.pointer_type(A_DT))
+    b_ptr = tl.load(meta_ptr + 2 * NT + tensor_id).to(tl.pointer_type(A_DT))
+    n_elements = tl.load(meta_ptr + 3 * NT + tensor_id)
+    if WEIGHT_MODE:
+        w = weight
+    else:
+        raw = tl.load(meta_ptr + 4 * NT + tensor_id)
+        w = tl.cast(raw.to(tl.int32), tl.float32, bitcast=True)
 
     arange = tl.arange(0, BLOCK)
-    for block_id in tl.range(part_id, tl.cdiv(num_elems, BLOCK), num_parts):
-        offs = block_id * BLOCK + arange
-        mask = offs < num_elems
-        a = tl.load(a_ptr + offs, mask=mask)
-        b = tl.load(b_ptr + offs, mask=mask)
-        if FP32_PROMOTE:
-            a = a.to(tl.float32)
-            b = b.to(tl.float32)
-        tl.store(out_ptr + offs, a + weight * (b - a), mask=mask)
+    # Keep the tile count as i32, consistent with the address-arithmetic width of the common executor.
+    num_tiles = tl.cdiv(n_elements, BLOCK).to(tl.int32)
+    if MASK_FREE:
+        # Mask-free full blocks: the main loop generates no per-element comparisons/masks, and the tail tile is
+        # finalized
+        # by the single program that owns it (the tail tile always has a part assignment, because every
+        # tensor has programs with PARTS part_id values from 0..PARTS-1).
+        num_full = (n_elements // BLOCK).to(tl.int32)
+        for block_id in tl.range(part_id, num_full, PARTS):
+            idx = block_id * BLOCK + arange
+            a = tl.load(a_ptr + idx)
+            b = tl.load(b_ptr + idx)
+            if FP32_PROMOTE:
+                a = a.to(tl.float32)
+                b = b.to(tl.float32)
+            tl.store(out_ptr + idx, a + w * (b - a))
+        if num_full < num_tiles and part_id == num_full % PARTS:
+            idx = num_full * BLOCK + arange
+            mask = idx < n_elements
+            a = tl.load(a_ptr + idx, mask=mask)
+            b = tl.load(b_ptr + idx, mask=mask)
+            if FP32_PROMOTE:
+                a = a.to(tl.float32)
+                b = b.to(tl.float32)
+            tl.store(out_ptr + idx, a + w * (b - a), mask=mask)
+    else:
+        for block_id in tl.range(part_id, num_tiles, PARTS):
+            idx = block_id * BLOCK + arange
+            mask = idx < n_elements
+            a = tl.load(a_ptr + idx, mask=mask)
+            b = tl.load(b_ptr + idx, mask=mask)
+            if FP32_PROMOTE:
+                a = a.to(tl.float32)
+                b = b.to(tl.float32)
+            tl.store(out_ptr + idx, a + w * (b - a), mask=mask)
 
 
-def can_use_flat(self, tensors1, weight) -> bool:
-    """Use the fast path only for same-dtype, contiguous, equal-length lists with per-tensor numeric scalars."""
-    if not self:
-        return False
-    if not isinstance(weight, (list, tuple)) or len(weight) != len(self):
-        return False
-    if not all(isinstance(value, (int, float)) for value in weight):
-        return False
+def _can_use_flat(self, tensors1, weight):
+    """返回权重形态（1=广播标量 / 0=逐 tensor 标量表），不合前提返回 None。
+
+    只放行同 dtype、同 device、连续、逐 pair 等长、非空且权重为纯数值
+    标量（或标量列表）的形态；权重是 tensor（含 0-d）、混合 dtype、
+    跨设备、非连续、空张量等一律回退公共执行器，异常语义不变。
+    """
+    if not isinstance(self, (list, tuple)) or not self:
+        return None
     if not isinstance(tensors1, (list, tuple)) or len(tensors1) != len(self):
-        return False
-    dtype = self[0].dtype
-    if dtype not in FLOAT_DTYPES:
-        return False
+        return None
+    if isinstance(weight, (list, tuple)):
+        if len(weight) != len(self):
+            return None
+        if not all(isinstance(value, (int, float)) for value in weight):
+            return None
+        weight_mode = 0
+    elif isinstance(weight, (int, float)):
+        weight_mode = 1
+    else:
+        return None
+    if len(self) * FAST_PARTS_CAP > _MAX_GRID_X:
+        return None
+    first = self[0]
+    if not isinstance(first, torch.Tensor) or first.dtype not in FLOAT_DTYPES:
+        return None
+    dtype = first.dtype
+    device = first.device
     for tensor, other in zip(self, tensors1):
+        if not isinstance(tensor, torch.Tensor) or not isinstance(other, torch.Tensor):
+            return None
         if tensor.dtype != dtype or other.dtype != dtype:
-            return False
+            return None
+        if tensor.device != device or other.device != device:
+            return None
         if not tensor.is_contiguous() or not other.is_contiguous():
-            return False
+            return None
         if tensor.numel() == 0 or other.numel() != tensor.numel():
-            return False
-    return True
+            return None
+    return weight_mode
 
 
 def run_lerp_scalar_list(self, tensors1, weight, inplace: bool):
-    """Execute lerp ScalarList; return the ``FALLBACK`` sentinel when the fast path does not apply."""
-    config = LERP_SCALAR_LIST_TUNING
-    if not config["enabled"] or not can_use_flat(self, tensors1, weight):
+    """执行 lerp 的 ``.Scalar`` / ``.ScalarList``；不合适时返回 ``FALLBACK``。
+
+    out-of-place 输出经 ``torch.empty_like`` 分配；metadata 只含地址、元素
+    数与权重位模式，经公共 ``_device_meta`` 只读缓存，稳态调用零同步 H2D，
+    kernel 每次仍完整读取并计算张量数据。
+    """
+    if FALLBACK_TO_PUBLIC:
+        return FALLBACK
+    weight_mode = _can_use_flat(self, tensors1, weight)
+    if weight_mode is None:
         return FALLBACK
 
     num_tensors = len(self)
-    outputs = None if inplace else [torch.empty_like(tensor) for tensor in self]
-    out_tensors = self if inplace else outputs
-    if config["cache_meta"]:
-        meta, weights = _build_launch_data(self, tensors1, out_tensors, weight)
+    if inplace:
+        outputs = None
+        out_tensors = self
     else:
-        meta = torch.tensor(
-            [tensor.data_ptr() for tensor in self]
-            + [tensor.data_ptr() for tensor in out_tensors]
-            + [tensor.data_ptr() for tensor in tensors1]
-            + [tensor.numel() for tensor in self],
-            dtype=torch.int64,
-            device=self[0].device,
-        )
-        weights = torch.tensor(
-            [float(value) for value in weight],
-            dtype=torch.float32,
-            device=self[0].device,
-        )
-    block_size = config["block_size"]
-    triton_dtype = _TL_DTYPES[self[0].dtype]
-    with nullcontext():
-        if config["fused"]:
-            blocks_per_tensor = triton.cdiv(
-                max(tensor.numel() for tensor in self), block_size
-            )
-            grid = max(1, min(config["fixed_grid"], num_tensors * blocks_per_tensor))
-            fused_lerp_scalar_list_kernel[(grid,)](
-                meta,
-                weights,
-                num_tensors,
-                triton_dtype,
-                config["fp32_promote"],
-                block_size,
-                num_warps=config["num_warps"],
-                num_stages=config["num_stages"],
-            )
-        else:
-            for index, (tensor, other, output) in enumerate(
-                zip(self, tensors1, out_tensors)
-            ):
-                num_elems = tensor.numel()
-                grid = (
-                    min(
-                        triton.cdiv(num_elems, block_size),
-                        config["fixed_grid"],
-                    ),
-                )
-                lerp_flat_kernel[grid](
-                    tensor,
-                    other,
-                    output,
-                    float(weight[index]),
-                    num_elems,
-                    config["fp32_promote"],
-                    block_size,
-                    num_warps=config["num_warps"],
-                    num_stages=config["num_stages"],
-                )
+        outputs = [torch.empty_like(tensor) for tensor in self]
+        out_tensors = outputs
+
+    a_ptrs = [tensor.data_ptr() for tensor in self]
+    out_ptrs = [tensor.data_ptr() for tensor in out_tensors]
+    b_ptrs = [tensor.data_ptr() for tensor in tensors1]
+    numels = [tensor.numel() for tensor in self]
+    if weight_mode:
+        # Broadcast scalar: the fp32 by-value argument is passed with the launch, and metadata has no scalar segment.
+        values = numels
+        scalar = float(weight)
+    else:
+        # Per-tensor weights: fp32 bit patterns are cached along with the int64 metadata.
+        bits = _weight_bits(weight)
+        if bits is None:
+            return FALLBACK
+        values = numels + bits
+        scalar = 0.0
+    meta = _device_meta(a_ptrs + out_ptrs + b_ptrs + values, self[0].device)
+
+    dtype = self[0].dtype
+    parts = max(1, min(FAST_PARTS_CAP, triton.cdiv(max(numels), FAST_BLOCK)))
+    fused_lerp_scalar_list_kernel[(num_tensors * parts,)](
+        meta,
+        scalar,
+        num_tensors,
+        _TL_DTYPES[dtype],
+        FP32_PROMOTE,
+        weight_mode,
+        int(FP32_MASK_FREE and dtype == torch.float32),
+        FAST_BLOCK,
+        parts,
+        num_warps=FAST_WARPS,
+        num_stages=FAST_STAGES,
+    )
     return None if inplace else outputs

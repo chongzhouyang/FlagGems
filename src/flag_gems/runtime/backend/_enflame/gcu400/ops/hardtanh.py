@@ -20,59 +20,238 @@ import triton
 import triton.language as tl
 
 from flag_gems.runtime import torch_device_fn
+from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 
+# GCU400 flat grid-stride rewrite of the KernelGen seed (fixed BLOCK=1024,
+# grid=cdiv(n, 1024)): the seed exceeds the grid.x=65535 hardware limit at
+# n >= 64Mi elements, so the core-bench cases at 2^29 elements die with
+# triton OutOfResources (repro: grid_0=524288, 2026-11-17, hardtanh and
+# hardtanh_out both FAILED with no numbers).  The flat form below (grid =
+# min(cdiv(n, BLOCK), 48) grid-striding over tiles, EVEN mask elision,
+# numel-based BLOCK/num_warps ladder) reuses the ladder measured for the
+# in-place hardtanh_ retune (2026-11-17) verbatim: the out-of-place op has
+# the same 1R1W clamp traffic (read n, write n, native-dtype clamp body),
+# and that probe found 16-bit BODY=3 at DRAM floor (667.5us @2^29 =
+# 1.015x native, copy floor 668-675us) and fp32 flat on the floor too
+# (1334us @2^29 = native parity), so only the tiny band differs from
+# native (3.2us vs 4.6-4.7us launch floor).
+#
+# Body variants (all bit-identical to the seed's
+# min/max + explicit-NaN-restore math on every value the aten op can
+# produce for float inputs; NaN propagates in 1 and 3 naturally, restored
+# in 2):
+#   BODY=1  where-clamp in the aten promote-to-f32 compare domain
+#           (hardsigmoid precedent: -11% vs min/max+NaN-restore on 16-bit
+#           mid/large bands).
+#   BODY=2  the seed math itself: tl.minimum/tl.maximum + where(x != x, x, y).
+#   BODY=3  where-clamp with the scalars rounded once into the tensor's own
+#           dtype (clamp_max BODY=3 precedent).  Stored results stay
+#           bit-identical to BODY=1 for every float input: rounding is
+#           monotone, so a boundary value that flips the compare rounds to
+#           the same stored element either way; NaN passes both forms.
+#           Skips the f32 round-trip cvt chain on 16-bit streams; never
+#           used for non-float dtypes (their seed math compares in f32).
+# BODY also splits the libentry dispatch key (which omits num_warps): a
+# shared (dtype, BLOCK) must never launch with two warp counts (relu6 rule).
+#
+# WIDE arm: for numel past the int32-safe offset domain the flat offsets
+# are computed in int64 (randn_like WIDE-arm precedent, 2026-11-16); this
+# keeps the flat-grid int32-wrap hazard closed without a second kernel and
+# with no upper size limit, where the seed would crash on the grid bound
+# anyway.
+NUM_SIPS = 24
+_FLAT_GRID_CAP = NUM_SIPS * 2
+# Max flat offset touched by the masked tail tile is ~N + BLOCK; keep the
+# int32 lane for N <= 2^31 - 2^17 (BLOCK <= 131072).
+_INT32_SAFE_LIMIT = (1 << 31) - (1 << 17)
 
-@triton.jit(do_not_specialize=["min_val", "max_val"])
-def hardtanh_kernel(
-    x_ptr, out_ptr, n_elements, min_val, max_val, BLOCK_SIZE: tl.constexpr
+_FLAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+
+
+@libentry()
+@triton.jit(do_not_specialize=["N", "min_val", "max_val"])
+def _hardtanh_flat_kernel(
+    X,
+    Y,
+    N,
+    min_val,
+    max_val,
+    BODY: tl.constexpr,
+    BLOCK: tl.constexpr,
+    EVEN: tl.constexpr,
+    WIDE: tl.constexpr,
 ):
-    pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
+    pid = tl.program_id(0)
+    num_ctas = tl.num_programs(0)
+    num_tiles = tl.cdiv(N, BLOCK)
+    for tile in range(pid, num_tiles, num_ctas):
+        if WIDE:
+            offs = tile.to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        else:
+            offs = tile * BLOCK + tl.arange(0, BLOCK)
+        if EVEN:
+            x = tl.load(X + offs)
+        else:
+            mask = offs < N
+            x = tl.load(X + offs, mask=mask)
+        if BODY == 1:
+            y = tl.where(x < min_val, min_val, tl.where(x > max_val, max_val, x))
+        elif BODY == 2:
+            y = tl.minimum(tl.maximum(x, min_val), max_val)
+            y = tl.where(x != x, x, y)
+        else:
+            mn = min_val.to(X.dtype.element_ty)
+            mx = max_val.to(X.dtype.element_ty)
+            y = tl.where(x < mn, mn, tl.where(x > mx, mx, x))
+        if EVEN:
+            tl.store(Y + offs, y)
+        else:
+            tl.store(Y + offs, y, mask=mask)
 
-    x = tl.load(x_ptr + offsets, mask=mask)
-    # hardtanh is a pure clamp with no precision-losing arithmetic, so operate in
-    # the input dtype directly; upcasting fp16/bf16 to float32 only wastes
-    # registers/bandwidth (cf. relu, which also stays native).
-    y = tl.minimum(tl.maximum(x, min_val), max_val)
-    # tl.minimum/tl.maximum drop NaN (IEEE minNum/maxNum), but PyTorch hardtanh
-    # propagates NaN. Restore that: x != x is True only for NaN.
-    y = tl.where(x != x, x, y)
 
-    tl.store(out_ptr + offsets, y, mask=mask)
+def _hardtanh_flat_config(numel, dtype):
+    # (BLOCK, num_warps, BODY) per-band ladder, GCU400 tight interleaved
+    # do_bench probe (3 rounds x {native, configs}, 2026-11-17, official
+    # protocol w1000/r100 median), inherited from the in-place hardtanh_
+    # retune (same 1R1W traffic):
+    #   16-bit: BODY=3 (native-domain where-clamp) beats the f32-compare
+    #   BODY=1 by -11% at 2^24 (26.0 vs 29.1-30.0us) and -5% at 2^29
+    #   (667.5 vs 704.6us); 131072/nw4 wins >= 2^22 (26.0us @2^24 = 1.25x
+    #   native, 667.5us @2^29 = 1.015x native, DRAM floor).
+    #   fp32: every body/config sits on the DRAM floor (47.1us @2^24 =
+    #   1.02x native; 1334us @2^29 = native parity); 32768/nw2 mid,
+    #   65536/nw8 big. BODY=2 (seed min/max math) measured -8~-20% on
+    #   16-bit (799us @2^29) and is never selected.
+    # Tiny band is launch-floor flat (3.2us vs native 4.6-4.7us); the
+    # 2026-11-17 out-of-place resweep keeps every mid/big band of the
+    # in-place ladder (all alternatives rejected: within noise or worse,
+    # copy-floor parity at 2^24/2^29) and only caps the tiny tile at 2048
+    # (2 CTAs at numel=4096 beat one 4096-wide CTA by 5-6%: 3.14/3.19/3.17
+    # vs 3.33/3.31/3.30us for fp16/bf16/fp32).
+    if dtype.is_floating_point and dtype.itemsize <= 2:
+        if numel <= 4096:
+            return min(max(triton.next_power_of_2(numel), 256), 2048), 2, 3
+        if numel <= 65536:
+            return 2048, 2, 3
+        if numel <= (1 << 21):
+            return 8192, 2, 3
+        if numel <= (1 << 22):
+            return 65536, 2, 3
+        return 131072, 4, 3
+    if numel <= 4096:
+        return min(max(triton.next_power_of_2(numel), 256), 2048), 2, 1
+    if numel <= 65536:
+        return 2048, 2, 1
+    if numel <= (1 << 21):
+        return 16384, 2, 1
+    if numel <= (1 << 28):
+        return 32768, 2, 1
+    return 65536, 8, 1
+
+
+# Host-level flake guard: on this shared multi-tenant host the extern
+# toolchain (gcu_compiler_llvm_ir_converter.sh children) intermittently
+# segfaults during a fresh compile under fork-storm load; the same launch
+# then succeeds on retry (failed compiles are not cached).  Only
+# signature-matched toolchain flakes are retried; deterministic errors
+# raise (clamp_max_ / hardsigmoid_ precedents).
+_TOOLCHAIN_FLAKE_MARKERS = (
+    "Segmentation fault",
+    "converterResult",
+    "serializing the module",
+    "core dumped",
+)
+
+
+def _launch_flat(X, Y, numel, min_val, max_val, block, num_warps, body):
+    if min_val > max_val:
+        # Degenerate domain (min > max): aten hardtanh returns max_val
+        # everywhere (min(max(x, min_val), max_val) composition), while
+        # the where-clamp bodies would return min_val there.  The
+        # seed-math BODY=2 arm is aten-exact on this domain; it is never
+        # selected on the hot path (valid min <= max).
+        body = 2
+    grid = (min(triton.cdiv(numel, block), _FLAT_GRID_CAP),)
+    wide = numel > _INT32_SAFE_LIMIT
+    for attempt in range(3):
+        try:
+            with torch_device_fn.device(X.device):
+                _hardtanh_flat_kernel[grid](
+                    X,
+                    Y,
+                    numel,
+                    min_val,
+                    max_val,
+                    BODY=body,
+                    BLOCK=block,
+                    EVEN=(numel % block == 0),
+                    WIDE=wide,
+                    num_warps=num_warps,
+                )
+            return
+        except Exception as exc:
+            if attempt < 2 and any(m in str(exc) for m in _TOOLCHAIN_FLAKE_MARKERS):
+                logger.debug(
+                    "hardtanh flat kernel toolchain flake on attempt %d, retrying",
+                    attempt,
+                )
+                continue
+            raise
 
 
 def hardtanh(A, min_val=-1.0, max_val=1.0):
-    logger.debug("GEMS_ENFLAME_GCU400 HARDTANH")
-    if not A.is_contiguous():
-        A = A.contiguous()
-    out = torch.empty_like(A)
-    n_elements = A.numel()
-    if n_elements == 0:
-        return out
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    with torch_device_fn.device(A.device):
-        hardtanh_kernel[grid](
-            A, out, n_elements, float(min_val), float(max_val), BLOCK_SIZE=1024
-        )
+    if not isinstance(A, torch.Tensor):
+        raise TypeError("hardtanh(): expected a Tensor")
+    if A.dtype not in _FLAT_DTYPES:
+        from flag_gems.ops.hardtanh import hardtanh as _public
+
+        return _public(A, min_val, max_val)
+
+    inp = A.contiguous()
+    n_total = inp.numel()
+    if n_total == 0:
+        return torch.empty_like(inp)
+    out = torch.empty_like(inp)
+
+    block, num_warps, body = _hardtanh_flat_config(n_total, inp.dtype)
+    _launch_flat(
+        inp, out, n_total, float(min_val), float(max_val), block, num_warps, body
+    )
     return out
 
 
 def hardtanh_out(A, min_val=-1.0, max_val=1.0, *, out=None):
-    logger.debug("GEMS_ENFLAME_GCU400 HARDTANH_OUT")
+    logger.debug("GEMS_ENFLAME HARDTANH_OUT")
     if out is None:
         return hardtanh(A, min_val, max_val)
-    if not A.is_contiguous():
-        A = A.contiguous()
-    n_elements = A.numel()
-    if n_elements == 0:
+    if not isinstance(A, torch.Tensor) or not isinstance(out, torch.Tensor):
+        raise TypeError("hardtanh_out(): expected Tensors")
+    assert A.numel() == out.numel()
+    if A.dtype not in _FLAT_DTYPES or out.dtype != A.dtype:
+        from flag_gems.ops.hardtanh import hardtanh_out as _public
+
+        return _public(A, min_val, max_val, out=out)
+
+    inp = A.contiguous()
+    n_total = out.numel()
+    if n_total == 0:
         return out
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    with torch_device_fn.device(A.device):
-        hardtanh_kernel[grid](
-            A, out, n_elements, float(min_val), float(max_val), BLOCK_SIZE=1024
+
+    block, num_warps, body = _hardtanh_flat_config(n_total, inp.dtype)
+    if not out.is_contiguous():
+        # Strided out cannot take flat stores; land the result in a fresh
+        # contiguous buffer and copy back through out's strides
+        # (hardswish_out strided-out precedent).
+        tmp = torch.empty_like(inp)
+        _launch_flat(
+            inp, tmp, n_total, float(min_val), float(max_val), block, num_warps, body
         )
+        out.copy_(tmp)
+        return out
+
+    _launch_flat(
+        inp, out, n_total, float(min_val), float(max_val), block, num_warps, body
+    )
     return out

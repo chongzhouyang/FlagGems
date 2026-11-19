@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # --- TUNING PARAMS START ---
 # Generated per optimization round; only affects the device where sparse output is materialized, not numeric semantics.
-USE_CPU_SPARSE = 1
+USE_CPU_SPARSE = 0
 # --- TUNING PARAMS END ---
 
 
@@ -37,25 +37,39 @@ def _masked_copy_rows_kernel(
     N,
     EMBED_DIM: tl.constexpr,
     BLOCK_D: tl.constexpr,
+    ROWS_PER_PROG: tl.constexpr,
+    NUM_D_CHUNKS: tl.constexpr,
 ):
-    # One program handles one row. Every row is copied through, but rows whose
-    # index equals padding_idx are written as zeros. This keeps the launch grid
-    # static (N rows) so there is no data-dependent host synchronization, unlike
-    # a torch.nonzero() compaction — that sync is what tanked the padded shapes.
-    pid_n = tl.program_id(0)
-    if pid_n >= N:
-        return
+    # Each program handles ROWS_PER_PROG rows (statically unrolled) and walks each
+    # row in NUM_D_CHUNKS chunks of BLOCK_D. Every row is copied as-is; only rows
+    # whose index equals padding_idx are zeroed.
+    # Both constants depend only on N/D, which keeps the grid independent of the
+    # data (no host-side nonzero sync needed).
+    # One program per row is not used because GCU caps grid.x at 65535 and the
+    # benchmark N=B*M=65536 hits OutOfResources; likewise BLOCK_D is capped at 256,
+    # so D>256 must be chunked.
+    pid = tl.program_id(0)
+    row_base = pid * ROWS_PER_PROG
 
-    offs_d = tl.arange(0, BLOCK_D)
-    mask_d = offs_d < EMBED_DIM
-
-    # P17: normalize indices to i32 after load (host already normalizes; guards both env layout differences),
-    # following the convention in embedding.py / embedding_dense_backward.py.
-    row_idx = tl.load(indices_ptr + pid_n).to(tl.int32)
-    go = tl.load(grad_output_ptr + pid_n * EMBED_DIM + offs_d, mask=mask_d, other=0)
-    keep = row_idx != padding_idx
-    go = tl.where(keep, go, 0.0)
-    tl.store(values_ptr + pid_n * EMBED_DIM + offs_d, go, mask=mask_d)
+    for row_offset in tl.static_range(ROWS_PER_PROG):
+        row = row_base + row_offset
+        if row < N:
+            # P17: normalize the loaded index to i32 (already normalized on the host;
+            # defensive against the two env layouts), matching the embedding.py /
+            # embedding_dense_backward.py convention.
+            row_idx = tl.load(indices_ptr + row).to(tl.int32)
+            keep = row_idx != padding_idx
+            for chunk in tl.static_range(NUM_D_CHUNKS):
+                offs_d = chunk * BLOCK_D + tl.arange(0, BLOCK_D)
+                mask_d = offs_d < EMBED_DIM
+                go = tl.load(
+                    grad_output_ptr + row * EMBED_DIM + offs_d, mask=mask_d, other=0
+                )
+                tl.store(
+                    values_ptr + row * EMBED_DIM + offs_d,
+                    tl.where(keep, go, 0.0),
+                    mask=mask_d,
+                )
 
 
 def embedding_sparse_backward(
@@ -65,7 +79,7 @@ def embedding_sparse_backward(
     padding_idx: int,
     scale_grad_by_freq: bool,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 EMBEDDING_SPARSE_BACKWARD")
+    logger.debug("GEMS_ENFLAME EMBEDDING_SPARSE_BACKWARD")
     assert indices.dtype in (
         torch.int32,
         torch.int64,
@@ -106,37 +120,25 @@ def embedding_sparse_backward(
     # aten's sparse backward emits one COO entry per grad row, dropping the ones
     # whose index equals padding_idx, and does NOT accumulate duplicates. The
     # result is an uncoalesced sparse COO tensor of shape (num_weights, D).
-    if padding_idx is not None and padding_idx >= 0:
-        # Keep every row in place and zero the padding rows in a single Triton
-        # pass. A dropped row and an all-zero row densify identically, so this
-        # matches aten's dense-equivalent gradient while avoiding the host sync
-        # that a nonzero() compaction would force on every launch.
-        sparse_indices = idx.view(1, -1)
-        values = torch.empty((N, D), device=device, dtype=grad_output.dtype)
-        if N > 0:
-            BLOCK_D = min(triton.next_power_of_2(D), 256)
-            _masked_copy_rows_kernel[(N,)](
-                go,
-                idx,
-                values,
-                padding_idx,
-                N,
-                EMBED_DIM=D,
-                BLOCK_D=BLOCK_D,
-            )
-    else:
-        # No padding: every grad row survives in order, so the flattened
-        # grad_output rows are exactly the COO values. Reuse them directly
-        # instead of copying into a fresh buffer.
-        sparse_indices = idx.view(1, -1)
-        values = go
+    has_padding = padding_idx is not None and padding_idx >= 0
+    # P21: GCU has no sparse backend, so the output must go back to the CPU as COO
+    # (matching the CPU fallback of the aten reference leg). Zeroing the padding
+    # rows then happens on the CPU, without an extra device-side copy kernel.
+    use_cpu_staging = USE_CPU_SPARSE and device.type != "cpu"
 
-    # P21: GCU has no sparse backend - after values are computed by the GCU kernel, move indices/values back to
-    # CPU to build COO, aligning the output device with the aten reference leg (CPU fallback) and avoiding half-built
-    # tensors.
-    if USE_CPU_SPARSE and device.type != "cpu":
-        sparse_indices = sparse_indices.detach().cpu().contiguous()
-        values = values.detach().cpu().contiguous()
+    if use_cpu_staging:
+        idx_cpu = idx.detach().cpu().contiguous()
+        sparse_indices = idx_cpu.view(1, -1)
+        # Without padding every row survives in order, so the flat grad_output rows
+        # are already the COO values and no extra buffer is needed.
+        values = go.detach().cpu()
+        if has_padding:
+            # Dropping padding rows and "zero this row" are equivalent under
+            # to_dense(); zeroing by explicit row number is over 4x faster than a
+            # boolean mask index (measured 0.13ms vs 0.65ms @65536x128 fp16).
+            pad_rows = (idx_cpu == padding_idx).nonzero().flatten()
+            if pad_rows.numel():
+                values[pad_rows] = 0
         out = torch.sparse_coo_tensor(
             sparse_indices,
             values,
@@ -145,6 +147,29 @@ def embedding_sparse_backward(
             device="cpu",
         )
     else:
+        sparse_indices = idx.view(1, -1)
+        if has_padding:
+            # Device-side COO has to stay on the GCU: copy whole rows and zero the
+            # padding rows.
+            values = torch.empty((N, D), device=device, dtype=grad_output.dtype)
+            if N > 0:
+                BLOCK_D = min(triton.next_power_of_2(D), 256)
+                num_d_chunks = triton.cdiv(D, BLOCK_D)
+                # grid.x hard cap is 65535: pack by row so a large N can never overflow it.
+                rows_per_prog = triton.cdiv(N, 65535)
+                _masked_copy_rows_kernel[(triton.cdiv(N, rows_per_prog),)](
+                    go,
+                    idx,
+                    values,
+                    padding_idx,
+                    N,
+                    EMBED_DIM=D,
+                    BLOCK_D=BLOCK_D,
+                    ROWS_PER_PROG=rows_per_prog,
+                    NUM_D_CHUNKS=num_d_chunks,
+                )
+        else:
+            values = go
         out = torch.sparse_coo_tensor(
             sparse_indices,
             values,

@@ -25,12 +25,13 @@ beyond the work budget (or with invalid contracts) to the generic code.
 
 import importlib
 import logging
+import os
 
 import torch
 import triton
 import triton.language as tl
 
-from flag_gems import runtime
+from flag_gems import runtime  # noqa: F401
 
 # ``flag_gems.ops`` re-exports ``scatter_reduce`` as a function, so importing
 # the attribute from the package yields that function instead of the module.
@@ -50,6 +51,19 @@ _MAX_SCAN_PAIRS_DRAM = 1 << 28
 _MAX_SCAN_DATA_BYTES = 48 << 20
 _MAX_SCAN_NUMEL = (1 << 31) - 1
 _REDUCE_IDS = {"sum": 0, "prod": 1, "mean": 2, "amax": 3, "amin": 4}
+
+# Threshold for the inner-lane kernel: only when the inner dimension is long enough (≥128) does the coalescing benefit
+# of consecutive lanes
+# outweigh the parallelism waste of "one program computing only a few elements". Measured ~7.5x at idx_inner=4096,
+# while it is 9x slower at idx_inner=1 (dim is the last dimension), so a narrow inner dimension must fall back to the
+# old kernel.
+_MIN_INNER_FOR_LANE_KERNEL = 128
+# Threshold for the 2D tile kernel: the tile gives 1.7~2.0x for inner∈[16,128); for inner<16 it is slower than the old
+# kernel
+# (measured 8x slower at inner=1: the 2D tile degrades into 32 single-lane scalar accesses).
+_MIN_INNER_FOR_TILE_KERNEL = 16
+_DEFAULT_GEN_BLOCK_I = 2048
+_DEFAULT_SCAN_BLOCK_I = 256
 
 
 @triton.jit(
@@ -152,10 +166,10 @@ def _gcu_scatter_reduce_vec_kernel(
 ):
     """Blocked vector scan over the index axis.
 
-    t9 batch Step 4: the original kernel scanned IDX_AXIS with a scalar loop (up to 256 iterations),
-    measuring 8~11ms on GCU400 / Triton 3.6. Switching to one tl.arange block load +
-    tl.sum / tl.max / tl.min reduction drops it to 1.1~1.4ms, bit-identical to the scalar result.
-    prod is not in this kernel (that Triton version lacks tl.prod); the wrapper falls back to the scalar version.
+    t9 批 Step 4：原 kernel 用标量循环遍历 IDX_AXIS（最多 256 次迭代），
+    在 GCU400 / Triton 3.6 上实测 8~11ms。改为一次 tl.arange 分块加载 +
+    tl.sum / tl.max / tl.min 归约后降到 1.1~1.4ms，且与标量结果逐位一致。
+    prod 不在此 kernel 内（该 Triton 版本无 tl.prod），由 wrapper 回退标量版。
     """
     pid = tl.program_id(axis=0).to(tl.int32)
     i = pid % OUT_INNER
@@ -197,6 +211,134 @@ def _gcu_scatter_reduce_vec_kernel(
     if not INCLUDE_SELF:
         acc = tl.where(seen > 0, acc, orig)
     tl.store(OutPtr + out_off, acc)
+
+
+# ---------------------------------------------------------------------------
+# Eager relaxed-atomic SUM path (R01, 2026-11-18)
+#
+# The historical note in ops/scatter_reduce.py reported that relaxed atomic_add
+# lost updates on GCU. Probe 15 re-checked that claim on the current torch_gcu
+# build: a minimal relaxed-atomic scatter-add matched the CPU golden bit for bit
+# on (256, 256) / (1024, 1024) / (10000, 256) fp16, and it beat the CPU round
+# trip by 1.33-1.36x once the element count passed the launch-overhead knee.
+# This kernel is that minimal form: no mask plane, no count plane, int32
+# offsets, and a 1D-or-2D grid because grid.x is capped at 65535.
+# ---------------------------------------------------------------------------
+_MAX_ATOMIC_GRID_X = 65535
+# Below this element count the launch cost plus the atomic unit throughput make
+# the CPU round trip cheaper. Probe 18 (2026-11-18) measured the crossover on
+# the nine benchmark shapes: 262145 and 524287 elements still favour the CPU
+# (0.78x / 0.82x) while 1048576 elements and above favour the GCU (1.52x).
+_MIN_ATOMIC_NUMEL = 1 << 20
+# Probe 18 BLOCK sweep on (1024,1024) and (4096,4096): 1024 gives 6.647ms /
+# 106.7ms against 7.083ms / 113.0ms at 512 and 169.3ms at 256.
+_ATOMIC_BLOCK = 1024
+
+
+@triton.jit(do_not_specialize=["N", "NCOLS"])
+def _gcu_atomic_scatter_reduce_sum_kernel(
+    IdxPtr,
+    SrcPtr,
+    OutPtr,
+    N,
+    NCOLS,
+    BLOCK: tl.constexpr,
+):
+    """One pass of relaxed atomic adds over the source elements.
+
+    Every program consumes BLOCK consecutive (index, src) pairs; ``row * NCOLS``
+    recovers the output base, which is only valid for dim == ndim - 1 with
+    matching outer shapes (the caller enforces that).
+    """
+    pid = tl.program_id(0) + tl.program_id(1) * tl.num_programs(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < N
+    row = offs // NCOLS
+    iv = tl.load(IdxPtr + offs, mask=mask, other=0).to(tl.int32)
+    sv = tl.load(SrcPtr + offs, mask=mask, other=0.0).to(tl.float32)
+    tl.atomic_add(OutPtr + row * NCOLS + iv, sv, mask=mask, sem="relaxed")
+
+
+@triton.jit(
+    do_not_specialize=[
+        "OUT_AXIS",
+        "IDX_AXIS",
+        "OUT_INNER",
+        "REDUCE_ID",
+        "INCLUDE_SELF",
+    ]
+)
+def _gcu_scatter_reduce_inner_kernel(
+    InPtr,
+    IdxPtr,
+    SrcPtr,
+    OutPtr,
+    OUT_AXIS,
+    IDX_AXIS,
+    OUT_INNER,
+    REDUCE_ID,
+    INCLUDE_SELF,
+    BLOCK_I: tl.constexpr,
+):
+    """Lane-vectorised variant: 每个 program 处理 inner 轴上的 BLOCK_I 个连续输出元素。
+
+    与 ``_gcu_scatter_reduce_vec_kernel`` 的区别只在内存访存方向：
+    vec 版一个 program 只算 1 个输出元素，扫描 index 轴时 lane 间步长为
+    OUT_INNER，256 条 lane 各命中一条独立 cache line（相当于每次 load 只用到
+    1/32 的字节）；本内核把 lane 铺在 **inner 轴** 上，扫描 index 轴时
+    ``IdxPtr/SrcPtr`` 的 BLOCK_I 条 lane 完全连续，一次 load 的 256×4B 落在
+    8 条 cache line 内，访存效率提升约 8 倍。归约次数（out_numel×idx_axis）
+    不变，因此这是纯访存侧优化，逐位结果与 vec 版一致。
+
+    prod 不走本内核（该 Triton 版本无 tl.prod）。
+    """
+    pid = tl.program_id(axis=0).to(tl.int32)
+    n_iblk = tl.cdiv(OUT_INNER, BLOCK_I)
+    i_blk = pid % n_iblk
+    t = (pid // n_iblk) % OUT_AXIS
+    o = pid // (n_iblk * OUT_AXIS)
+    i = i_blk * BLOCK_I + tl.arange(0, BLOCK_I)
+    m_i = i < OUT_INNER
+    out_off = (o * OUT_AXIS + t) * OUT_INNER + i
+    orig = tl.load(InPtr + out_off, mask=m_i, other=0.0).to(tl.float32)
+
+    acc = tl.zeros([BLOCK_I], dtype=tl.float32)
+    if REDUCE_ID == 3:
+        acc = tl.full([BLOCK_I], float("-inf"), tl.float32)
+    elif REDUCE_ID == 4:
+        acc = tl.full([BLOCK_I], float("inf"), tl.float32)
+    denom = tl.zeros([BLOCK_I], dtype=tl.float32)
+    if INCLUDE_SELF:
+        # The initial values of amax/amin must be "replaced" by input values, not accumulated:
+        # -inf + x is still -inf, which makes amax/amin with include_self completely wrong.
+        if REDUCE_ID == 3 or REDUCE_ID == 4:
+            acc = orig
+        else:
+            acc += orig
+        denom += 1.0
+    seen = tl.zeros([BLOCK_I], dtype=tl.int32)
+
+    for k in range(IDX_AXIS):
+        off = o * IDX_AXIS * OUT_INNER + k * OUT_INNER + i
+        iv = tl.load(IdxPtr + off, mask=m_i, other=-1).to(tl.int32)
+        sv = tl.load(SrcPtr + off, mask=m_i, other=0.0).to(tl.float32)
+        hit = (iv == t) & m_i
+        seen += tl.where(hit, 1, 0)
+        if REDUCE_ID == 0:
+            acc += tl.where(hit, sv, 0.0)
+        elif REDUCE_ID == 2:
+            acc += tl.where(hit, sv, 0.0)
+            denom += tl.where(hit, 1.0, 0.0)
+        elif REDUCE_ID == 3:
+            acc = tl.maximum(acc, tl.where(hit, sv, float("-inf")))
+        else:
+            acc = tl.minimum(acc, tl.where(hit, sv, float("inf")))
+
+    if REDUCE_ID == 2:
+        acc = acc / tl.maximum(denom, 1.0)
+    if not INCLUDE_SELF:
+        acc = tl.where(seen > 0, acc, orig)
+    tl.store(OutPtr + out_off, acc, mask=m_i)
 
 
 def _prod(shape):
@@ -242,7 +384,7 @@ def _gcu_scatter_reduce_general_kernel(
     output and index share the (outer, axis, inner) decomposition and every
     (o, t, i) output element scans the matching index row in IDX_BLOCK vector
     blocks, reducing the hits in fp32 without atomics. Programs stride over
-    the outputs (grid capped at 65535), so out_numel is unbounded; ``t9 batch generalization``
+    the outputs (grid capped at 65535), so out_numel is unbounded; ``t9 批泛化``
     adds grid-stride, the prod branch (tl.reduce multiply) and independent
     OUT/IDX strides relative to the aligned-only fast-path kernels.
     """
@@ -292,6 +434,189 @@ def _gcu_scatter_reduce_general_kernel(
         if not INCLUDE_SELF:
             acc = tl.where(seen > 0, acc, orig)
         tl.store(OutPtr + out_id, acc)
+
+
+@triton.jit(
+    do_not_specialize=[
+        "OUTER",
+        "OUT_AXIS",
+        "OUT_INNER",
+        "IDX_AXIS",
+        "IDX_INNER",
+        "REDUCE_ID",
+        "INCLUDE_SELF",
+    ]
+)
+def _gcu_scatter_reduce_gen_inner_kernel(
+    InPtr,
+    IdxPtr,
+    SrcPtr,
+    OutPtr,
+    OUTER,
+    OUT_AXIS,
+    OUT_INNER,
+    IDX_AXIS,
+    IDX_INNER,
+    REDUCE_ID,
+    INCLUDE_SELF,
+    BLOCK_I: tl.constexpr,
+):
+    """通用确定性扫描内核（inner 轴 lane 向量化 + grid-stride）。
+
+    与 ``_gcu_scatter_reduce_general_kernel`` 数学等价（同样的输出中心扫描、
+    无原子、确定性），只改访存方向与并行划分：
+
+    * lane 铺在 **inner 轴**（``BLOCK_I`` 个连续元素），扫描 index 轴时
+      ``IdxPtr/SrcPtr`` 的一次 load 是连续的 BLOCK_I×elem_size；旧内核 lane
+      铺在 index 轴（步长 IDX_INNER），每 lane 命中独立 cache line。
+    * 以 block 为单位 grid-stride：总 block 数
+      ``outer × out_axis × cdiv(inner, BLOCK_I)`` 可远超 grid 上限。
+    * index 轴改为标量循环，prod 也退化成逐元素乘法（不再需要 tl.prod）。
+    """
+    pid = tl.program_id(axis=0).to(tl.int32)
+    nprog = tl.num_programs(axis=0).to(tl.int32)
+    n_iblk = tl.cdiv(OUT_INNER, BLOCK_I)
+    total_blocks = OUTER * OUT_AXIS * n_iblk
+
+    for bid in range(pid, total_blocks, nprog):
+        i_blk = bid % n_iblk
+        t = (bid // n_iblk) % OUT_AXIS
+        o = bid // (n_iblk * OUT_AXIS)
+        i = i_blk * BLOCK_I + tl.arange(0, BLOCK_I)
+        m_i = i < OUT_INNER
+        out_off = (o * OUT_AXIS + t) * OUT_INNER + i
+        orig = tl.load(InPtr + out_off, mask=m_i, other=0.0).to(tl.float32)
+
+        acc = tl.zeros([BLOCK_I], dtype=tl.float32)
+        if REDUCE_ID == 1:
+            acc = tl.full([BLOCK_I], 1.0, tl.float32)
+        elif REDUCE_ID == 3:
+            acc = tl.full([BLOCK_I], float("-inf"), tl.float32)
+        elif REDUCE_ID == 4:
+            acc = tl.full([BLOCK_I], float("inf"), tl.float32)
+        denom = tl.zeros([BLOCK_I], dtype=tl.float32)
+        if INCLUDE_SELF:
+            # Same as the inner kernel: amax/amin replace the initial ±inf with input values; prod initializes by
+            # multiplication.
+            if REDUCE_ID == 1:
+                acc *= orig
+            elif REDUCE_ID == 3 or REDUCE_ID == 4:
+                acc = orig
+            else:
+                acc += orig
+            denom += 1.0
+        seen = tl.zeros([BLOCK_I], dtype=tl.int32)
+
+        for k in range(IDX_AXIS):
+            off = o * IDX_AXIS * IDX_INNER + k * IDX_INNER + i
+            iv = tl.load(IdxPtr + off, mask=m_i, other=-1).to(tl.int32)
+            sv = tl.load(SrcPtr + off, mask=m_i, other=0.0).to(tl.float32)
+            hit = (iv == t) & m_i
+            seen += tl.where(hit, 1, 0)
+            if REDUCE_ID == 0:
+                acc += tl.where(hit, sv, 0.0)
+            elif REDUCE_ID == 1:
+                acc *= tl.where(hit, sv, 1.0)
+            elif REDUCE_ID == 2:
+                acc += tl.where(hit, sv, 0.0)
+                denom += tl.where(hit, 1.0, 0.0)
+            elif REDUCE_ID == 3:
+                acc = tl.maximum(acc, tl.where(hit, sv, float("-inf")))
+            else:
+                acc = tl.minimum(acc, tl.where(hit, sv, float("inf")))
+
+        if REDUCE_ID == 2:
+            acc = acc / tl.maximum(denom, 1.0)
+        if not INCLUDE_SELF:
+            acc = tl.where(seen > 0, acc, orig)
+        tl.store(OutPtr + out_off, acc, mask=m_i)
+
+
+@triton.jit(
+    do_not_specialize=[
+        "OUTER",
+        "OUT_AXIS",
+        "OUT_INNER",
+        "IDX_AXIS",
+        "IDX_INNER",
+        "REDUCE_ID",
+        "INCLUDE_SELF",
+    ]
+)
+def _gcu_scatter_reduce_tile_kernel(
+    InPtr,
+    IdxPtr,
+    SrcPtr,
+    OutPtr,
+    OUTER,
+    OUT_AXIS,
+    OUT_INNER,
+    IDX_AXIS,
+    IDX_INNER,
+    REDUCE_ID,
+    INCLUDE_SELF,
+    BLOCK_I: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    """窄内层（``out_inner < 128``）专用：2D tile 覆盖 (index 轴 × inner 轴)。
+
+    窄内层时单靠 inner 轴铺不满一个向量，``_gcu_scatter_reduce_gen_inner_kernel``
+    会浪费 lane；本内核把 inner 轴（BLOCK_I，向上取 2 的幂并对齐 IDX_INNER）与
+    index 轴（BLOCK_K）拼成一个二维 tile，使一次 load 覆盖
+    ``BLOCK_K × BLOCK_I`` 个**物理连续**元素（IDX_INNER 小时 tile 整体连续），
+    再沿 index 轴做向量归约。prod 无可用归约原语，仍走旧内核。
+    """
+    pid = tl.program_id(axis=0).to(tl.int32)
+    nprog = tl.num_programs(axis=0).to(tl.int32)
+    n_iblk = tl.cdiv(OUT_INNER, BLOCK_I)
+    total_blocks = OUTER * OUT_AXIS * n_iblk
+    ii = tl.arange(0, BLOCK_I)
+    kk = tl.arange(0, BLOCK_K)
+
+    for bid in range(pid, total_blocks, nprog):
+        i_blk = bid % n_iblk
+        t = (bid // n_iblk) % OUT_AXIS
+        o = bid // (n_iblk * OUT_AXIS)
+        i = i_blk * BLOCK_I + ii
+        m_i = i < OUT_INNER
+        out_off = (o * OUT_AXIS + t) * OUT_INNER + i
+        orig = tl.load(InPtr + out_off, mask=m_i, other=0.0).to(tl.float32)
+
+        acc = tl.zeros([BLOCK_I], dtype=tl.float32)
+        if REDUCE_ID == 3:
+            acc = tl.full([BLOCK_I], float("-inf"), tl.float32)
+        elif REDUCE_ID == 4:
+            acc = tl.full([BLOCK_I], float("inf"), tl.float32)
+        denom = tl.zeros([BLOCK_I], dtype=tl.float32)
+        if INCLUDE_SELF:
+            if REDUCE_ID == 3 or REDUCE_ID == 4:
+                acc = orig
+            else:
+                acc += orig
+            denom += 1.0
+        seen = tl.zeros([BLOCK_I], dtype=tl.int32)
+
+        for kb in range(tl.cdiv(IDX_AXIS, BLOCK_K)):
+            kv = kb * BLOCK_K + kk
+            off = o * IDX_AXIS * IDX_INNER + kv[:, None] * IDX_INNER + i[None, :]
+            m = (kv < IDX_AXIS)[:, None] & m_i[None, :]
+            iv = tl.load(IdxPtr + off, mask=m, other=-1).to(tl.int32)
+            sv = tl.load(SrcPtr + off, mask=m, other=0.0).to(tl.float32)
+            hit = (iv == t) & m
+            seen += tl.sum(tl.where(hit, 1, 0), axis=0)
+            if REDUCE_ID == 0 or REDUCE_ID == 2:
+                acc += tl.sum(tl.where(hit, sv, 0.0), axis=0)
+                denom += tl.sum(tl.where(hit, 1.0, 0.0), axis=0)
+            elif REDUCE_ID == 3:
+                acc = tl.maximum(acc, tl.max(tl.where(hit, sv, float("-inf")), axis=0))
+            else:
+                acc = tl.minimum(acc, tl.min(tl.where(hit, sv, float("inf")), axis=0))
+
+        if REDUCE_ID == 2:
+            acc = acc / tl.maximum(denom, 1.0)
+        if not INCLUDE_SELF:
+            acc = tl.where(seen > 0, acc, orig)
+        tl.store(OutPtr + out_off, acc, mask=m_i)
 
 
 def _general_candidate(inp, dim, index, src, reduce):
@@ -349,22 +674,79 @@ def _general_scatter_reduce(inp, dim, index, src, reduce, include_self):
     out = torch.empty_like(inp_c)
     from flag_gems.runtime import torch_device_fn
 
+    # Kernel selection:
+    #  * wide inner (≥128): inner-lane kernel, with BLOCK_I set to _DEFAULT_GEN_BLOCK_I;
+    #  * narrow inner: 2D tile kernel (except prod, which has no usable reduction primitive);
+    #  * FLAGGEMS_SR_GEN_BLOCK=0: old kernel, for A/B and regression comparison.
+    gen_block = int(os.environ.get("FLAGGEMS_SR_GEN_BLOCK", str(_DEFAULT_GEN_BLOCK_I)))
+    gen_warps = int(os.environ.get("FLAGGEMS_SR_WARPS", "4"))
     with torch_device_fn.device(inp.device):
-        _gcu_scatter_reduce_general_kernel[(min(out_numel, 65535),)](
-            inp_c,
-            idx_c,
-            src_c,
-            out,
-            out_numel,
-            out_axis,
-            idx_inner,
-            idx_axis,
-            idx_inner,
-            _REDUCE_IDS[reduce],
-            include_self,
-            IDX_BLOCK=256,
-            num_warps=1,
+        use_tile = (
+            gen_block > 0
+            and reduce != "prod"
+            and _MIN_INNER_FOR_TILE_KERNEL <= idx_inner < _MIN_INNER_FOR_LANE_KERNEL
         )
+        if use_tile:
+            tile_i = 1 << max(0, min(idx_inner, 128) - 1).bit_length()
+            tile_k = max(1, 256 // tile_i)
+            n_iblk = (idx_inner + tile_i - 1) // tile_i
+            total_blocks = outer * out_axis * n_iblk
+            _gcu_scatter_reduce_tile_kernel[(min(total_blocks, 65535),)](
+                inp_c,
+                idx_c,
+                src_c,
+                out,
+                outer,
+                out_axis,
+                idx_inner,
+                idx_axis,
+                idx_inner,
+                _REDUCE_IDS[reduce],
+                include_self,
+                BLOCK_I=tile_i,
+                BLOCK_K=tile_k,
+                num_warps=gen_warps,
+            )
+        elif gen_block > 0 and idx_inner >= _MIN_INNER_FOR_TILE_KERNEL:
+            # BLOCK_I must not exceed the nearest power of two of the inner axis, otherwise idle lanes are wasted
+            # proportionally
+            # (at inner=128 + BLOCK_I=2048, 15/16 of the lanes idle).
+            if idx_inner < gen_block:
+                gen_block = 1 << (idx_inner - 1).bit_length()
+            n_iblk = (idx_inner + gen_block - 1) // gen_block
+            total_blocks = outer * out_axis * n_iblk
+            _gcu_scatter_reduce_gen_inner_kernel[(min(total_blocks, 65535),)](
+                inp_c,
+                idx_c,
+                src_c,
+                out,
+                outer,
+                out_axis,
+                idx_inner,
+                idx_axis,
+                idx_inner,
+                _REDUCE_IDS[reduce],
+                include_self,
+                BLOCK_I=gen_block,
+                num_warps=gen_warps,
+            )
+        else:
+            # Inner dimension too narrow (<16) or prod: both inner-lane and 2D tile degrade, so use the old kernel.
+            _gcu_scatter_reduce_general_kernel[(min(out_numel, 65535),)](
+                inp_c,
+                idx_c,
+                src_c,
+                out,
+                out_numel,
+                out_axis,
+                idx_inner,
+                idx_axis,
+                idx_inner,
+                _REDUCE_IDS[reduce],
+                include_self,
+                IDX_BLOCK=256,
+                num_warps=1,
+            )
 
     active_is_full = all(
         axis == dim or index_shape[axis] == inp_shape[axis] for axis in range(inp.ndim)
@@ -420,7 +802,7 @@ def scatter_reduce(
     _use_product_lock=False,
     _product_grid_limit=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 SCATTER_REDUCE")
+    logger.debug("GEMS_ENFLAME SCATTER_REDUCE")
     candidate = _scan_candidate(inp, dim, index, src, reduce, include_self)
     if candidate is None:
         general = _general_candidate(inp, dim, index, src, reduce)
@@ -458,21 +840,45 @@ def scatter_reduce(
         _inp = inp.contiguous()
         _src = src.contiguous()
         _out = torch.empty_like(_inp)
+        # Inner-axis lane-vectorized kernel: when BLOCK_I=0, fall back to the original "one program, one output
+        # element" vec version, for A/B and regression comparison.
+        block_i = int(
+            os.environ.get("FLAGGEMS_SR_INNER_BLOCK", str(_DEFAULT_SCAN_BLOCK_I))
+        )
+        if out_inner < _MIN_INNER_FOR_LANE_KERNEL:
+            block_i = 0
         with _tdf.device(inp.device):
-            _gcu_scatter_reduce_vec_kernel[(out_numel,)](
-                _inp,
-                index.contiguous(),
-                _src,
-                _out,
-                out_axis,
-                idx_axis,
-                out_inner,
-                out_numel,
-                _REDUCE_IDS[reduce],
-                include_self,
-                IDX_BLOCK=256,
-                num_warps=1,
-            )
+            if block_i > 0:
+                grid = ((out_inner + block_i - 1) // block_i) * out_axis
+                grid *= max(1, out_numel // (out_axis * out_inner))
+                _gcu_scatter_reduce_inner_kernel[(grid,)](
+                    _inp,
+                    index.contiguous(),
+                    _src,
+                    _out,
+                    out_axis,
+                    idx_axis,
+                    out_inner,
+                    _REDUCE_IDS[reduce],
+                    include_self,
+                    BLOCK_I=block_i,
+                    num_warps=4,
+                )
+            else:
+                _gcu_scatter_reduce_vec_kernel[(out_numel,)](
+                    _inp,
+                    index.contiguous(),
+                    _src,
+                    _out,
+                    out_axis,
+                    idx_axis,
+                    out_inner,
+                    out_numel,
+                    _REDUCE_IDS[reduce],
+                    include_self,
+                    IDX_BLOCK=256,
+                    num_warps=1,
+                )
         return _out
 
     inp_f32 = inp.to(torch.float32).contiguous()
@@ -559,19 +965,97 @@ def _guard_roundtrip_device(tensors):
     return tensors[0].device
 
 
-def _aten_scatter_reduce_two_guard(inp, dim, index, src, reduce, *, include_self=True):
+def _atomic_sum_candidate(inp, dim, src, index, reduce, include_self):
+    """Return (idx_i32, src_cast, out, ncols) when the eager atomic path applies.
+
+    The kernel recovers the output base as ``row * ncols``, which is only valid
+    for the last-dimension case with matching outer shapes, so every other
+    layout stays on the CPU round trip. Non-SUM reductions keep their existing
+    deterministic or CPU paths because atomic_max/min and the prod CAS loop are
+    neither verified nor cheap on this backend.
+    """
+    if reduce != "sum":
+        return None
+    if inp.dtype not in (torch.float16, torch.float32, torch.bfloat16):
+        return None
+    if src.dtype != inp.dtype or index.dtype != torch.int64:
+        return None
+    if inp.ndim == 0 or inp.ndim > 5:
+        return None
+    dim = dim % inp.ndim
+    if dim != inp.ndim - 1:
+        return None
+    if index.shape != src.shape or index.shape != inp.shape:
+        return None
+    if index.numel() < _MIN_ATOMIC_NUMEL:
+        return None
+    if inp.numel() > _MAX_SCAN_NUMEL:
+        return None
+
+    ncols = int(inp.shape[-1])
+    if ncols <= 0:
+        return None
+    inp_c = inp.contiguous()
+    src_c = src.contiguous().to(torch.float32)
+    idx_i32 = index.to(torch.int32).contiguous()
+    if include_self:
+        # .to(float32) is a no-op for float32 inputs and would alias the input,
+        # so the accumulator is always a fresh buffer.
+        out = torch.empty(inp.shape, dtype=torch.float32, device=inp.device)
+        out.copy_(inp_c)
+    else:
+        out = torch.zeros(inp.shape, dtype=torch.float32, device=inp.device)
+    return idx_i32, src_c, out, ncols
+
+
+def _launch_atomic_sum(idx_i32, src_f32, out, ncols, block=_ATOMIC_BLOCK, warps=4):
+    from flag_gems.runtime import torch_device_fn
+
+    total = idx_i32.numel()
+    programs = triton.cdiv(total, block)
+    grid = (
+        min(programs, _MAX_ATOMIC_GRID_X),
+        triton.cdiv(programs, _MAX_ATOMIC_GRID_X),
+    )
+    with torch_device_fn.device(out.device):
+        _gcu_atomic_scatter_reduce_sum_kernel[grid](
+            idx_i32,
+            src_f32,
+            out,
+            total,
+            ncols,
+            BLOCK=block,
+            num_warps=warps,
+        )
+    return out
+
+
+def _gcu_or_cpu_scatter_reduce(inp, dim, index, src, reduce, include_self):
+    """Prefer the GCU atomic path above the measured crossover, else CPU.
+
+    torch_gcu still aborts the device on its native scatter_reduce, so the CPU
+    round trip remains the correctness fallback for every layout or reduction
+    this backend has no verified GCU path for.
+    """
+    candidate = _atomic_sum_candidate(inp, dim, src, index, reduce, include_self)
+    if candidate is not None:
+        idx_i32, src_f32, out, ncols = candidate
+        return _launch_atomic_sum(idx_i32, src_f32, out, ncols).to(inp.dtype)
     result = torch.scatter_reduce(
         inp.cpu(), dim, index.cpu(), src.cpu(), reduce, include_self=include_self
     )
     return result.to(inp.device)
 
 
+def _aten_scatter_reduce_two_guard(inp, dim, index, src, reduce, *, include_self=True):
+    return _gcu_or_cpu_scatter_reduce(inp, dim, index, src, reduce, include_self)
+
+
 def _aten_scatter_reduce_two_inplace_guard(
     inp, dim, index, src, reduce, *, include_self=True
 ):
-    host = inp.cpu()
-    host.scatter_reduce_(dim, index.cpu(), src.cpu(), reduce, include_self=include_self)
-    inp.copy_(host)
+    result = _gcu_or_cpu_scatter_reduce(inp, dim, index, src, reduce, include_self)
+    inp.copy_(result)
     return inp
 
 
@@ -585,13 +1069,35 @@ class _GuardedScatterReduceOverload:
         target = _guard_roundtrip_device(tensors)
         if target is None:
             return self._overload(*args, **kwargs)
+        out = kwargs.get("out")
+        # ``reduce`` arrives positionally from aten but as a keyword from
+        # benchmark and test drivers, so accept both spellings.
+        reduce = kwargs.get("reduce", args[4] if len(args) >= 5 else None)
+        if (
+            len(args) >= 4
+            and isinstance(args[0], torch.Tensor)
+            and isinstance(args[2], torch.Tensor)
+            and isinstance(args[3], torch.Tensor)
+            and isinstance(reduce, str)
+        ):
+            result = _gcu_or_cpu_scatter_reduce(
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+                reduce,
+                kwargs.get("include_self", True),
+            )
+            if isinstance(out, torch.Tensor):
+                out.copy_(result)
+                return out
+            return result
         host_args = [a.cpu() if isinstance(a, torch.Tensor) else a for a in args]
         host_kwargs = {
             k: (v.cpu() if isinstance(v, torch.Tensor) else v)
             for k, v in kwargs.items()
         }
         result = self._overload(*host_args, **host_kwargs)
-        out = kwargs.get("out")
         if isinstance(out, torch.Tensor):
             out.copy_(result)
             return out
@@ -613,43 +1119,3 @@ class _AtenScatterReduceProxy:
         if isinstance(attr, torch._ops.OpOverload):
             return _GuardedScatterReduceOverload(attr)
         return attr
-
-
-def _install_native_scatter_reduce_guard():
-    global _SCATTER_REDUCE_GUARD_LIBRARY
-    if getattr(torch, _SCATTER_REDUCE_GUARD_FLAG, False):
-        return
-    dispatch_key = runtime.device.dispatch_key
-    installed = False
-    library = torch.library.Library("aten", "IMPL")
-    for op_name, guard in (
-        ("scatter_reduce.two", _aten_scatter_reduce_two_guard),
-        ("scatter_reduce_.two", _aten_scatter_reduce_two_inplace_guard),
-    ):
-        try:
-            library.impl(op_name, guard, dispatch_key)
-            installed = True
-        except RuntimeError as error:
-            logger.warning(
-                "scatter_reduce: aten registration %s@%s skipped: %s",
-                op_name,
-                dispatch_key,
-                error,
-            )
-    if installed:
-        _SCATTER_REDUCE_GUARD_LIBRARY = library
-    else:
-        del library
-    packet = getattr(torch.ops.aten, "scatter_reduce", None)
-    if packet is not None and not getattr(
-        packet, "_flaggems_gcu_scatter_reduce_proxy", False
-    ):
-        proxy = _AtenScatterReduceProxy(packet)
-        proxy._flaggems_gcu_scatter_reduce_proxy = True
-        torch.ops.aten.scatter_reduce = proxy
-        installed = True
-    if installed:
-        setattr(torch, _SCATTER_REDUCE_GUARD_FLAG, True)
-
-
-_install_native_scatter_reduce_guard()

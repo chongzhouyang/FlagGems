@@ -255,7 +255,19 @@ _unsafe_index_put_func = UnsafeIndexPutFunction()
 
 
 def unsafe_index_put(inp, indices, values, accumulate=False):
-    logger.debug("GEMS_ENFLAME_GCU400 UNSAFE_INDEX_PUT")
+    logger.debug("GEMS_ENFLAME UNSAFE_INDEX_PUT")
+
+    # The accumulation path (accumulate=True) uses tl.atomic_add to accumulate in place in the input dtype:
+    # native atomic adds for fp16/bf16 round to low precision after every add; with repeated indices (especially when a
+    # single
+    # add makes the magnitude far larger than the final result and cancellation occurs), the accumulated error exceeds
+    # the test tolerance.
+    # Therefore, the accumulation path for low-precision inputs first promotes everything to fp32 for accumulation, then
+    # writes back to the original dtype once at the end.
+    if accumulate and inp.dtype in (torch.float16, torch.bfloat16):
+        fp32_accumulator = inp.float()
+        unsafe_index_put_impl(fp32_accumulator, indices, values.float(), accumulate)
+        return fp32_accumulator.to(inp.dtype)
 
     out = inp.clone()
     return unsafe_index_put_impl(out, indices, values, accumulate)

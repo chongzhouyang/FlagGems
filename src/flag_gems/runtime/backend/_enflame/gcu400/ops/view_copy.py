@@ -86,7 +86,30 @@ def view_copy(x: torch.Tensor, size) -> torch.Tensor:
     if not out.is_contiguous():
         out = out.contiguous()
 
-    block_size = 16384
+    # Launch ladder (GCU400, probe-validated 2026-11-16, job j20261116195130):
+    # tiny <=8192 -> exact-fit pow2 block; 2B: (2^22,2^28] -> (65536,nw2,NS2),
+    # >2^28 -> (131072,nw4,NS1); 4B >2^22 -> (65536,nw4,NS1); else unchanged.
+    # DSM in-flight budget BLOCK*itemsize*NS <= 256KB < 448KB keeps 48-way.
+    n = n_elements
+    itemsize = x.element_size()
+    if n <= 8192:
+        block_size = max(triton.next_power_of_2(n), 64)
+        num_warps = 4
+        num_stages = 4
+    elif itemsize <= 2:
+        if n <= 2**22:
+            block_size, num_warps, num_stages = 16384, 4, 4
+        elif n <= 2**28:
+            block_size, num_warps, num_stages = 65536, 2, 2
+        else:
+            block_size, num_warps, num_stages = 131072, 4, 1
+    elif itemsize == 4:
+        if n <= 2**22:
+            block_size, num_warps, num_stages = 16384, 4, 4
+        else:
+            block_size, num_warps, num_stages = 65536, 4, 1
+    else:
+        block_size, num_warps, num_stages = 16384, 4, 4
     num_tile = triton.cdiv(n_elements, block_size)
     grid = (min(_GRID_SIZE, num_tile), 1, 1)
     with torch_device_fn.device(x.device.index):
@@ -96,7 +119,7 @@ def view_copy(x: torch.Tensor, size) -> torch.Tensor:
             n_elements,
             BLOCK_SIZE=block_size,
             GRID_SIZE=min(_GRID_SIZE, num_tile),
-            NUM_STAGES=4,
-            num_warps=4,
+            NUM_STAGES=num_stages,
+            num_warps=num_warps,
         )
     return out

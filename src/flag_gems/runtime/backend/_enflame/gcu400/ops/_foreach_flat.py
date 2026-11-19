@@ -36,6 +36,7 @@ import triton.language as tl
 
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry, tl_extra_shim
+from flag_gems.utils.foreach import _device_meta
 
 # Triton 3.6 tl tensors have no __pow__; reuse the same GCU libdevice powf as the common implementation.
 _pow = tl_extra_shim.pow
@@ -322,6 +323,44 @@ def fused_unary_kernel(
         tl.store(data_ptr + offs, result, mask=mask)
 
 
+@libentry()
+@triton.jit
+def copy_list_kernel(
+    meta_ptr,
+    NT: tl.constexpr,
+    A_DT: tl.constexpr,
+    B_DT: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """``_foreach_copy``: the whole paired tensor list on one maskless launch.
+
+    ``meta_ptr`` holds destination pointers, source pointers and element counts
+    (NT entries each, int64) and ``grid.x`` is linearized over ``(tensor, part)``
+    in exact multiples of NT. The destination tile is never loaded and the
+    per-tile bounds mask is compiled out: the host only takes this kernel when
+    every element count divides ``BLOCK``, so the mask would be dead anyway.
+    ``A_DT`` and ``B_DT`` may differ -- the store casts the source value into
+    the destination dtype, which is copy semantics (no promotion).
+    """
+    pid = tl.program_id(0)
+    num_programs = tl.num_programs(0)
+    tensor_id = pid % NT
+    part_id = pid // NT
+    num_parts = tl.cdiv(num_programs, NT)
+
+    out_ptr = tl.load(meta_ptr + tensor_id).to(tl.pointer_type(A_DT))
+    b_ptr = tl.load(meta_ptr + NT + tensor_id).to(tl.pointer_type(B_DT))
+    num_elems = tl.load(meta_ptr + 2 * NT + tensor_id)
+
+    arange = tl.arange(0, BLOCK)
+    # The tile count stays in i32 to keep the address arithmetic narrow, as in
+    # the common executors.
+    num_tiles = tl.cdiv(num_elems, BLOCK).to(tl.int32)
+    for block_id in tl.range(part_id, num_tiles, num_parts):
+        offs = block_id * BLOCK + arange
+        tl.store(out_ptr + offs, tl.load(b_ptr + offs))
+
+
 def can_use_flat(self, operand, mode):
     """Check whether a list has a shape the fast path can handle safely."""
     if not self:
@@ -538,6 +577,98 @@ def run_binary(
                 num_stages=num_stages,
             )
     return None if inplace else outputs
+
+
+# --- TUNING PARAMS START ---
+# ``_foreach_copy`` 专属定档（2026-11-19，官方 do_bench kernel 模式 w1000/r100，
+# 16-tensor 均匀列表，16x{256,512,1024}^2 x fp32/fp16/bf16 逐档单配置扫描）：
+#   * 死的目标端 load 在当前栈已被编译器 DCE（ship 与 noload 探针全档持平），
+#     真正的杠杆是 grid：二元族共用的 fixed_grid 24 在 16-tensor 列表下只有
+#     32 个 program，设备 48 核有三分之一空闲；48-program grid 在 1024^2 档
+#     -37%（fp32 80.0→50.6us / fp16 45.8→28.9us，贴 1R1W 天花板 2.65TB/s）；
+#   * numel 全部整除 BLOCK 时免逐 tile bounds mask，再拿 -2%~-5%；
+#   * BLOCK 按 dtype 分档沿 _foreach_maximum_List 的家族定档：fp32 用 8192、
+#     16-bit 用 16384（每 tile 缓冲均 32 KiB）；
+#   * 不整除（ragged）列表回退既有 masked 二元 kernel 路径，行为逐位不变。
+COPY_FIXED_GRID = 48
+COPY_BLOCK_32BIT = 8192
+COPY_BLOCK_16BIT = 16384
+COPY_NUM_WARPS = 4
+COPY_NUM_STAGES = 1
+# grid.x 硬上限，与二元执行器一致（超出走公共执行器）。
+COPY_MAX_LIST_LEN = 65535
+# --- TUNING PARAMS END ---
+
+
+def run_copy(self, src, inplace):
+    """Paired uniform float lists on one cached maskless launch, or ``FALLBACK``.
+
+    Replays the binary executor's takeover conditions for ``copy``: two tensor
+    lists that pair position by position on one flat index, each list uniform
+    in a float dtype, all contiguous and non-empty on one device. Lists whose
+    element counts do not all divide the tuned ``BLOCK`` also answer
+    ``FALLBACK`` and keep the masked binary kernel, so ragged shapes stay
+    bit-for-bit on the shipped path. The metadata table (destination and
+    source addresses plus element counts) rides the read-only content cache:
+    steady-state calls reuse the same int64 table with zero H2D.
+    """
+    if not isinstance(self, (list, tuple)) or not self:
+        return FALLBACK
+    num_tensors = len(self)
+    if num_tensors > COPY_MAX_LIST_LEN:
+        return FALLBACK
+    if not isinstance(src, (list, tuple)) or len(src) != num_tensors:
+        return FALLBACK
+    a0 = self[0]
+    if not isinstance(a0, torch.Tensor):
+        return FALLBACK
+    dtype = a0.dtype
+    if dtype not in FLOAT_DTYPES:
+        return FALLBACK
+    b0 = src[0]
+    if not isinstance(b0, torch.Tensor) or b0.dtype not in FLOAT_DTYPES:
+        return FALLBACK
+    device = a0.device
+    b_dtype = b0.dtype
+    block = COPY_BLOCK_32BIT if dtype is torch.float32 else COPY_BLOCK_16BIT
+    numels = []
+    for tensor in self:
+        if tensor.dtype is not dtype or tensor.device != device:
+            return FALLBACK
+        numel = tensor.numel()
+        if numel == 0 or not tensor.is_contiguous() or numel % block != 0:
+            return FALLBACK
+        numels.append(numel)
+    for tensor, numel in zip(src, numels):
+        if (
+            tensor.dtype is not b_dtype
+            or tensor.device != device
+            or not tensor.is_contiguous()
+            or tensor.numel() != numel
+        ):
+            return FALLBACK
+
+    out_tensors = self if inplace else [torch.empty_like(tensor) for tensor in self]
+    pointers = (
+        [tensor.data_ptr() for tensor in out_tensors]
+        + [tensor.data_ptr() for tensor in src]
+        + numels
+    )
+    meta = _device_meta(pointers, device)
+    # grid is an exact multiple of the tensor count by construction, so every
+    # tile of every tensor is covered (parts is floored, never ceiled).
+    blocks_per_tensor = -(-max(numels) // block)
+    parts = max(1, min(COPY_FIXED_GRID // num_tensors, blocks_per_tensor))
+    copy_list_kernel[(num_tensors * parts,)](
+        meta,
+        num_tensors,
+        _TL_DTYPES[dtype],
+        _TL_DTYPES[b_dtype],
+        block,
+        num_warps=COPY_NUM_WARPS,
+        num_stages=COPY_NUM_STAGES,
+    )
+    return None if inplace else out_tensors
 
 
 def _run_fused_unary(

@@ -23,22 +23,75 @@ broadcast length mismatches still delegate to the common ``_apply_list`` to keep
 import logging
 
 from flag_gems.ops._foreach_binary import _apply_list
+from flag_gems.utils.foreach import _device_meta
 
-from ._foreach_flat import FALLBACK, MODE_LIST, OP_MAX, run_binary
+from ._foreach_flat import (
+    _TL_DTYPES,
+    FALLBACK,
+    MODE_LIST,
+    OP_MAX,
+    _fused_grid,
+    can_use_flat,
+    fused_binary_list_kernel,
+    run_binary,
+)
 
 logger = logging.getLogger(__name__)
 
 # --- TUNING PARAMS START ---
-# Generated per round by the optimization driver script; all compile-time / launch-time config, semantics unchanged.
-FIXED_GRID = 48
-BLOCK_SIZE = 8192
+# Generated per round by the optimization-iteration driver script; all are compile-time/launch-time settings, not
+# changing operator semantics.
+# Geometry sweep on this machine's new stack (Triton GCU 4.1.6) (27 configs × 3 rounds interleaved in one process): 24
+# programs × 16K tile wins across all shapes/dtypes for 16-tensor lists (1024² fp32
+# 64.1us = 2.9TB/s streaming peak, vs 48×8K at 85.4us; grids 16/32/48 are all worse
+# by 35-75%), consistent with the ``_foreach_binary`` family setting of 24/16384.
+FIXED_GRID = 24
+BLOCK_SIZE = 16384
 NUM_WARPS = 4
 NUM_STAGES = 1
 USE_DEVICE_CONTEXT = 0
 FP32_PROMOTE = 0
 FUSED_LAUNCH = 1
 FALLBACK_TO_PUBLIC = 0
+# Read-only metadata cache: the key contains only device and addresses/numels, so steady-state calls incur zero H2D.
+USE_META_CACHE = 1
 # --- TUNING PARAMS END ---
+
+
+def _run_clamp_min_cached(self, other):
+    """配对同形浮点列表的单 launch 路径（metadata 走只读缓存）。
+
+    广播 ``.List``（第二操作数与对应输入元素数不同）不与输入共用平坦
+    索引，``can_use_flat`` 未覆盖的形态同样返回 ``FALLBACK``，由调用方
+    决定回退目标。metadata 的四段布局（输入/输出/第二操作数地址 + 各
+    元素数）与 ``_foreach_flat`` 的融合 kernel 完全一致；in-place 下输出
+    地址即输入地址，逐元素 ``maximum`` 无跨元素依赖，同缓冲写回安全。
+    """
+    if not can_use_flat(self, other, MODE_LIST):
+        return FALLBACK
+    if not all(
+        other_tensor.numel() == tensor.numel()
+        for tensor, other_tensor in zip(self, other)
+    ):
+        return FALLBACK
+    num_tensors = len(self)
+    in_ptrs = [tensor.data_ptr() for tensor in self]
+    out_ptrs = in_ptrs
+    b_ptrs = [tensor.data_ptr() for tensor in other]
+    numels = [tensor.numel() for tensor in self]
+    meta = _device_meta(in_ptrs + out_ptrs + b_ptrs + numels, self[0].device)
+    grid = (_fused_grid(self, FIXED_GRID, BLOCK_SIZE),)
+    fused_binary_list_kernel[grid](
+        meta,
+        num_tensors,
+        OP_MAX,
+        _TL_DTYPES[self[0].dtype],
+        FP32_PROMOTE,
+        BLOCK_SIZE,
+        num_warps=NUM_WARPS,
+        num_stages=NUM_STAGES,
+    )
+    return None
 
 
 def _foreach_clamp_min__List(self, other):
@@ -49,6 +102,10 @@ def _foreach_clamp_min__List(self, other):
 
     if FALLBACK_TO_PUBLIC:
         return fallback()
+    if USE_META_CACHE:
+        result = _run_clamp_min_cached(self, other)
+        if result is not FALLBACK:
+            return result
     result = run_binary(
         self,
         other,

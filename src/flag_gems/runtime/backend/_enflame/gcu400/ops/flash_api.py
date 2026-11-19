@@ -20,7 +20,10 @@ import triton
 
 import flag_gems
 from flag_gems import runtime
-from flag_gems.ops.flash_kernel import (
+from flag_gems.runtime import torch_device_fn
+from flag_gems.utils.random_utils import philox_backend_seed_offset
+
+from .flash_kernel import (
     block_m_splitkv_heuristic,
     block_n_splitkv_heuristic,
     flash_fwd_kernel,
@@ -28,8 +31,6 @@ from flag_gems.ops.flash_kernel import (
     flash_fwd_splitkv_kernel,
     flash_varlen_fwd_kernel,
 )
-from flag_gems.runtime import torch_device_fn
-from flag_gems.utils.random_utils import philox_backend_seed_offset
 
 logger = logging.getLogger(__name__)
 _debug = False

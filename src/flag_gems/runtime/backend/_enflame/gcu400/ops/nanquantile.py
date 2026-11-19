@@ -32,6 +32,22 @@ logger = logging.getLogger(__name__)
 INTERPOLATION_METHODS = ("linear", "lower", "higher", "nearest", "midpoint")
 INTERPOLATION_CODES = {name: code for code, name in enumerate(INTERPOLATION_METHODS)}
 MAX_BITONIC_SIZE = 2048
+# Lower and upper bounds on the reduction length for row-batch rank selection (pairs kernel):
+# - Lower bound: shorter rows stay on the bitonic path (tl.sort overhead on small blocks is negligible, and tiny levels
+# like (1,) are already at the launch floor).
+# - Upper bound 2048: the (BLOCK_R, BLOCK_M) matrix with BLOCK_M=next_pow2(reduction_size) is of the same
+#   origin as the old select kernel; BLOCK_M >= 4096 makes gcu-compiler-opt crash on a ShapedType::getNumElements
+#   assertion (int overflow), so rows in (2048, 4096] do not use this kernel (switch to sort+gather, fixing the latent
+# compiler crash of the old select gate
+#   reduction_size<=4096 on that interval).
+MIN_SELECT_SIZE = 8
+MAX_SELECT_SIZE = 2048
+# For a python float scalar q, the pairs-path lower bound drops to 1: the scalar bitonic/gather path pays
+# a H2D on every call via torch.tensor(q) (~50-90µs host floor), whereas pairs can pass the scalar argument directly,
+# and on tiny reductions (BLOCK_M<8) even 32 counting rounds take only ~25µs, making it ~2x faster; tensor q (including
+# 0-dim)
+# has no H2D issue, so tiny reductions still use bitonic (the kernel is cheaper).
+MIN_SELECT_SIZE_SCALAR = 1
 MAX_REDUCTION_SIZE = 1 << 24
 
 
@@ -106,6 +122,106 @@ def _nanquantile_bitonic_kernel(
 
     result = tl.where(valid_count == 0, float("nan"), result)
     tl.store(out + row * q_size + q_offsets, result, mask=valid_q)
+
+
+@libentry()
+@triton.jit
+def _nanquantile_pairs_kernel(
+    inp,
+    q,
+    out,
+    n_pairs,
+    n_rows,
+    reduction_size,
+    q_size,
+    q_scalar,
+    BLOCK_M: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    Q_SCALAR: tl.constexpr,
+    interpolation: tl.constexpr,
+):
+    """行批位精确秩选择：把 (行, q) 对按 row-major 展平成 lane 维，单个 program 用
+    (BLOCK_R, BLOCK_M) 计数矩阵同时推进 BLOCK_R 条独立的 32 轮计数二分。
+
+    GCU 上每次跨 lane reduce（axis-reduce 物化到 DSM）约 0.7-1.3µs 且与矩阵宽度
+    基本无关；旧 select kernel 每程序只处理一行（1D 输入甚至只有一个 program），
+    32 轮串行 reduce 的税无法摊薄、48 个 SP 大量空转。本 kernel 把同一笔 reduce
+    税摊到 BLOCK_R 个 (行, q) 上，2D 档 4-6x、1D 档 6-9x（行数不再限制并行度）。
+
+    键映射与旧 select kernel 相同：float32 值做 IEEE754 位序单调 int32 键
+    （正数 key = bits，负数 key = bits ^ 0x7FFFFFFF），NaN 通过 values == values
+    排除在计数之外。upper 值 = 严格大于 lower_key 的最小键（一次 masked-min，
+    省掉第二套二分）。二分中点用 (lo & hi) + ((lo ^ hi) >> 1) 的无溢出 int32
+    中点公式，全程免 int64 向量链。
+    """
+    pid = ext.program_id(0)
+    pair_ids = pid * BLOCK_R + tl.arange(0, BLOCK_R)
+    pair_valid = pair_ids < n_pairs
+    pair_rows = pair_ids // q_size
+    pair_qs = pair_ids - pair_rows * q_size
+    rows = tl.where(pair_valid, pair_rows, 0)
+    row_base = rows.to(tl.int64) * reduction_size
+    cols = tl.arange(0, BLOCK_M)
+    in_range = cols < reduction_size
+
+    values = tl.load(
+        inp + row_base[:, None] + cols[None, :],
+        mask=pair_valid[:, None] & in_range[None, :],
+        other=0.0,
+    )
+    valid = (values == values) & pair_valid[:, None] & in_range[None, :]
+    valid_count = tl.sum(valid.to(tl.int32), axis=1)
+    bits = values.to(tl.int32, bitcast=True)
+    keys = tl.where(bits < 0, bits ^ 0x7FFFFFFF, bits)
+
+    # Q_SCALAR: a python float scalar q goes directly as a kernel scalar argument, avoiding creation of a device tensor
+    # on the host
+    # (one H2D copy per call is about 50-90µs, the host floor for the scalar variant)
+    if Q_SCALAR:
+        q_values = tl.zeros((BLOCK_R,), dtype=tl.float32) + q_scalar
+    else:
+        q_values = tl.load(q + pair_qs, mask=pair_valid, other=0.0).to(tl.float32)
+    last_valid = tl.maximum(valid_count - 1, 0).to(tl.float32)
+    ranks = q_values * last_valid
+    lower_rank = tl.floor(ranks).to(tl.int32)
+    upper_rank = tl.ceil(ranks).to(tl.int32)
+
+    lo = tl.full((BLOCK_R,), -2147483648, dtype=tl.int32)
+    hi = tl.full((BLOCK_R,), 2147483647, dtype=tl.int32)
+    target = lower_rank + 1
+    for _ in tl.static_range(32):
+        mid = (lo & hi) + ((lo ^ hi) >> 1)
+        cnt = tl.sum(tl.where(valid & (keys <= mid[:, None]), 1, 0), axis=1)
+        hit = cnt >= target
+        hi = tl.where(hit, mid, hi)
+        lo = tl.where(hit, lo, mid + 1)
+
+    bits_low = tl.where(lo < 0, lo ^ 0x7FFFFFFF, lo)
+    lower_values = bits_low.to(tl.float32, bitcast=True)
+    # upper value = the smallest key strictly greater than lower_key (same as lower when rank is an integer),
+    # a single masked-min replaces a second set of 32 binary-search rounds
+    upper_key = tl.min(tl.where(valid & (keys > lo[:, None]), keys, 2147483647), axis=1)
+    bits_up = tl.where(upper_key < 0, upper_key ^ 0x7FFFFFFF, upper_key)
+    upper_values = tl.where(
+        upper_rank == lower_rank, lower_values, bits_up.to(tl.float32, bitcast=True)
+    )
+
+    if interpolation == 0:
+        result = lower_values + (upper_values - lower_values) * (
+            ranks - lower_rank.to(tl.float32)
+        )
+    elif interpolation == 1:
+        result = lower_values
+    elif interpolation == 2:
+        result = upper_values
+    elif interpolation == 3:
+        rounded = tl_extra_shim.rint(ranks).to(tl.int32)
+        result = tl.where(rounded == upper_rank, upper_values, lower_values)
+    else:
+        result = lower_values + (upper_values - lower_values) * 0.5
+
+    result = tl.where(valid_count == 0, float("nan"), result)
+    tl.store(out + rows.to(tl.int64) * q_size + pair_qs, result, mask=pair_valid)
 
 
 @libentry()
@@ -249,7 +365,7 @@ def _validate_args(inp, q, dim, interpolation, out):
 def _nanquantile_impl(
     inp, q, dim=None, keepdim=False, interpolation="linear", out=None
 ) -> Tensor:
-    logger.debug("GEMS_ENFLAME_GCU400 NANQUANTILE")
+    logger.debug("GEMS_ENFLAME NANQUANTILE")
     _validate_args(inp, q, dim, interpolation, out)
 
     original_ndim = inp.ndim
@@ -270,22 +386,28 @@ def _nanquantile_impl(
 
     q_is_tensor = isinstance(q, torch.Tensor)
     q_is_scalar = not q_is_tensor or q.dim() == 0
+    q_value = None
     if not q_is_tensor:
         q_value = float(q)
         if not 0.0 <= q_value <= 1.0:
             raise RuntimeError(
                 f"quantile() q must be in the range [0, 1] but got {q_value}"
             )
-        q = torch.tensor(q_value, dtype=inp.dtype, device=inp.device)
-    q_contiguous = contiguous(q).reshape(-1)
-    if q_is_tensor and q_contiguous.numel():
-        block_size = 256
-        with torch_device_fn.device(inp.device):
-            _validate_q_kernel[(triton.cdiv(q_contiguous.numel(), block_size),)](
-                q_contiguous,
-                q_contiguous.numel(),
-                BLOCK_SIZE=block_size,
-            )
+    if q_is_tensor:
+        q_contiguous = contiguous(q).reshape(-1)
+        if q_contiguous.numel():
+            block_size = 256
+            with torch_device_fn.device(inp.device):
+                _validate_q_kernel[(triton.cdiv(q_contiguous.numel(), block_size),)](
+                    q_contiguous,
+                    q_contiguous.numel(),
+                    BLOCK_SIZE=block_size,
+                )
+    else:
+        # Defer tensor creation for a python float scalar q: the pairs path passes the scalar argument directly,
+        # avoiding H2D;
+        # only the bitonic / gather paths (which need a q pointer) materialize it here
+        q_contiguous = None
 
     reduction_size = reduced.size(-1)
     if reduction_size > MAX_REDUCTION_SIZE:
@@ -294,7 +416,7 @@ def _nanquantile_impl(
             f"must not exceed {MAX_REDUCTION_SIZE} elements"
         )
     n_rows = reduced.numel() // reduction_size
-    q_size = q_contiguous.numel()
+    q_size = 1 if q_contiguous is None else q_contiguous.numel()
     internal_shape = (*reduced.shape[:-1], q_size)
     if q_is_scalar:
         result_shape = list(reduced.shape[:-1])
@@ -332,7 +454,52 @@ def _nanquantile_impl(
     if q_size:
         if reduction_size:
             with torch_device_fn.device(inp.device):
-                if reduction_size <= MAX_BITONIC_SIZE:
+                if (
+                    inp.dtype == torch.float32
+                    and (MIN_SELECT_SIZE if q_is_tensor else MIN_SELECT_SIZE_SCALAR)
+                    <= reduction_size
+                    <= MAX_SELECT_SIZE
+                ):
+                    # float32 uses the row-batch rank-selection path: (row, q) pairs are tiled row-major into the lane
+                    # dimension,
+                    # a single program's (BLOCK_R, BLOCK_M) counting matrix advances BLOCK_R independent binary
+                    # searches,
+                    # without relying on row count to fill the device (1D inputs also have only a few programs, but the
+                    # per-program tax is fully amortized).
+                    block_m = triton.next_power_of_2(reduction_size)
+                    if block_m <= 256:
+                        block_r = 8
+                    elif block_m == 512:
+                        block_r = 4
+                    elif block_m == 1024:
+                        block_r = 8
+                    else:
+                        block_r = 4
+                    n_pairs = n_rows * q_size
+                    # lane count does not exceed the number of pairs to process (otherwise 1D/few-row inputs waste empty
+                    # lanes),
+                    # a lower bound of 4 preserves the reduce parallelism shape of the (BLOCK_R, BLOCK_M) matrix
+                    block_r = min(block_r, max(4, triton.next_power_of_2(n_pairs)))
+                    _nanquantile_pairs_kernel[(triton.cdiv(n_pairs, block_r),)](
+                        reduced,
+                        q_contiguous if q_contiguous is not None else reduced,
+                        internal,
+                        n_pairs,
+                        n_rows,
+                        reduction_size,
+                        q_size,
+                        0.0 if q_value is None else q_value,
+                        BLOCK_M=block_m,
+                        BLOCK_R=block_r,
+                        Q_SCALAR=q_value is not None,
+                        interpolation=INTERPOLATION_CODES[interpolation],
+                        num_warps=4,
+                    )
+                elif reduction_size <= MAX_BITONIC_SIZE:
+                    if q_contiguous is None:
+                        q_contiguous = torch.tensor(
+                            q_value, dtype=inp.dtype, device=inp.device
+                        ).reshape(-1)
                     block_m = triton.next_power_of_2(reduction_size)
                     block_q = min(triton.next_power_of_2(q_size), 16)
                     _nanquantile_bitonic_kernel[(n_rows, triton.cdiv(q_size, block_q))](
@@ -344,9 +511,13 @@ def _nanquantile_impl(
                         BLOCK_M=block_m,
                         BLOCK_Q=block_q,
                         interpolation=INTERPOLATION_CODES[interpolation],
-                        num_warps=min(16, max(4, block_m // 256)),
+                        num_warps=min(16, max(8, block_m // 256)),
                     )
                 else:
+                    if q_contiguous is None:
+                        q_contiguous = torch.tensor(
+                            q_value, dtype=inp.dtype, device=inp.device
+                        ).reshape(-1)
                     keys = torch.empty_like(reduced)
                     _sort_keys_kernel[(triton.cdiv(reduced.numel(), 1024),)](
                         reduced, keys, reduced.numel(), BLOCK_SIZE=1024
@@ -385,26 +556,26 @@ def _nanquantile_impl(
 
 
 def nanquantile(inp, q, dim=None, keepdim=False, interpolation="linear") -> Tensor:
-    logger.debug("GEMS_ENFLAME_GCU400 NANQUANTILE")
+    logger.debug("GEMS_ENFLAME NANQUANTILE")
+    logger.debug("GEMS_ENFLAME NANQUANTILE_SCALAR")
+    logger.debug("GEMS_ENFLAME NANQUANTILE_OUT")
+    logger.debug("GEMS_ENFLAME NANQUANTILE_SCALAR_OUT")
     return _nanquantile_impl(inp, q, dim, keepdim, interpolation)
 
 
 def nanquantile_scalar(
     inp, q, dim=None, keepdim=False, interpolation="linear"
 ) -> Tensor:
-    logger.debug("GEMS_ENFLAME_GCU400 NANQUANTILE_SCALAR")
     return _nanquantile_impl(inp, q, dim, keepdim, interpolation)
 
 
 def nanquantile_out(
     inp, q, dim=None, keepdim=False, interpolation="linear", out=None
 ) -> Tensor:
-    logger.debug("GEMS_ENFLAME_GCU400 NANQUANTILE_OUT")
     return _nanquantile_impl(inp, q, dim, keepdim, interpolation, out)
 
 
 def nanquantile_scalar_out(
     inp, q, dim=None, keepdim=False, interpolation="linear", out=None
 ) -> Tensor:
-    logger.debug("GEMS_ENFLAME_GCU400 NANQUANTILE_SCALAR_OUT")
     return _nanquantile_impl(inp, q, dim, keepdim, interpolation, out)

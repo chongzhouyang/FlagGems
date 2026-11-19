@@ -22,22 +22,27 @@ from flag_gems.runtime import device
 logger = logging.getLogger(__name__)
 
 
+MAX_GRID = 48
+
+
 @triton.jit
 def arctanh_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
+    num_pids = tl.num_programs(axis=0)
+    num_blocks = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
 
-    x = tl.load(x_ptr + offsets, mask=mask, other=0)
-    x_f32 = x.to(tl.float32)
+        x = tl.load(x_ptr + offsets, mask=mask, other=0)
+        x_f32 = x.to(tl.float32)
 
-    one = 1.0
-    # atanh(x) = 0.5 * (log(1 + x) - log(1 - x))
-    y_f32 = 0.5 * (tl.log(one + x_f32) - tl.log(one - x_f32))
-    y = y_f32.to(x.dtype)
+        one = 1.0
+        # atanh(x) = 0.5 * (log(1 + x) - log(1 - x))
+        y_f32 = 0.5 * (tl.log(one + x_f32) - tl.log(one - x_f32))
+        y = y_f32.to(x.dtype)
 
-    tl.store(out_ptr + offsets, y, mask=mask)
+        tl.store(out_ptr + offsets, y, mask=mask)
 
 
 def _launch_arctanh(x: torch.Tensor, out: torch.Tensor):
@@ -61,7 +66,7 @@ def _launch_arctanh(x: torch.Tensor, out: torch.Tensor):
             out.copy_(out_contig)
         return out
 
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    grid = (min(triton.cdiv(n_elements, 1024), MAX_GRID),)
     arctanh_kernel[grid](x_contig, out_contig, n_elements, BLOCK_SIZE=1024)
 
     if out_contig is not out:
@@ -70,13 +75,13 @@ def _launch_arctanh(x: torch.Tensor, out: torch.Tensor):
 
 
 def arctanh(x: torch.Tensor):
-    logger.debug("GEMS_ENFLAME_GCU400 ARCTANH")
+    logger.debug("GEMS_ENFLAME ARCTANH")
     out = torch.empty_like(x)
     _launch_arctanh(x, out)
     return out
 
 
 def arctanh_out(x: torch.Tensor, out: torch.Tensor):
-    logger.debug("GEMS_ENFLAME_GCU400 ARCTANH_OUT")
+    logger.debug("GEMS_ENFLAME ARCTANH_OUT")
     _launch_arctanh(x, out)
     return out

@@ -29,21 +29,40 @@ logger = logging.getLogger(__name__)
 _LOG_PI = tl.constexpr(1.1447298858494001741434273513531)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["grid_x"])
 def igamma_kernel(
     a_ptr,
     x_ptr,
     out_ptr,
     n_elements,
+    grid_x,
     BLOCK_SIZE: tl.constexpr,
+    FLAT: tl.constexpr = True,
+    WIDE: tl.constexpr = False,
 ):
-    pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    # Grid form: this backend caps grid.x at 65535 programs, so a 1D launch
+    # only reaches 65535 * BLOCK_SIZE elements (16.7M at BLOCK=256; the
+    # benchmark's 1Gi cases need 4M programs). Beyond that the program axis
+    # splits in 2D (pid = x + y * grid_x). FLAT keeps the single-axis form
+    # with zero prologue arithmetic; hosts must pass FLAT=True for 1D
+    # launches. grid_x is do_not_specialize to avoid per-shape recompiles.
+    if FLAT:
+        pid = tl.program_id(axis=0)
+    else:
+        pid = tl.program_id(axis=0) + tl.program_id(axis=1) * grid_x
+    # WIDE: with the 2D split the program count no longer bounds the element
+    # offset domain, so N past the int32 range must compute offsets in int64
+    # to avoid wrap-around stores.
+    if WIDE:
+        offsets = pid.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    else:
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    a = tl.load(a_ptr + offsets, mask=mask)
-    x = tl.load(x_ptr + offsets, mask=mask)
+    # Masked lanes read a=1, x=0: benign values that keep every block-wide
+    # reduction (branch/convergence tests) free of NaN/inf; never stored.
+    a = tl.load(a_ptr + offsets, mask=mask, other=1.0)
+    x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
 
     # Convert to float32 for computation
     a_f32 = a.to(tl.float32)
@@ -54,28 +73,51 @@ def igamma_kernel(
 
     # Constants
     pi = 3.1415926535897932384626433832795028841971
-    lanczos_g = 7.0
 
-    # ========== log_gamma computation using Lanczos ==========
+    # ========== log_gamma computation using Lanczos (g=7, n=8) ==========
     # Reflection for a < 0.5
     reflect_mask = a_f32 < 0.5
     x_refl = tl.where(reflect_mask, 1.0 - a_f32, a_f32)
 
     z = x_refl - 1.0
-    p = (
-        0.99999999999980993
-        + 676.5203681218851 / (z + 1.0)
-        + -1259.1392167224028 / (z + 2.0)
-        + 771.32342877765313 / (z + 3.0)
-        + -176.61502916214059 / (z + 4.0)
-        + 12.507343278686905 / (z + 5.0)
-        + -0.13857109526572012 / (z + 6.0)
-        + 9.9843695780195716e-6 / (z + 7.0)
-        + 1.5056327351493116e-7 / (z + 8.0)
+    # The 8-term partial-fraction Lanczos sum c0 + c1/(z+1) + ... + c8/(z+8)
+    # equals N(z)/D(z) with D(z) = (z+1)...(z+8). Two degree-8 Horner chains
+    # plus a single division replace the 8 divisions (coefficients derived
+    # from the exact partial fractions; fp32 Horner error ~6e-08 vs fp64).
+    n_poly = (
+        (
+            (
+                (
+                    (
+                        ((z + 60.458333333342054) * z + 1599.042534722041) * z
+                        + 24165.510665029542
+                    )
+                    * z
+                    + 228235.2154997143
+                )
+                * z
+                + 1379496.2658786695
+            )
+            * z
+            + 5210869.017760828
+        )
+        * z
+        + 11246929.484659923
+    ) * z + 10619610.099075994
+    d_poly = (
+        (
+            (((((z + 36.0) * z + 546.0) * z + 4536.0) * z + 22449.0) * z + 67284.0) * z
+            + 118124.0
+        )
+        * z
+        + 109584.0
+    ) * z + 40320.0
+    t = z + 7.5
+    log_gamma_a = (
+        (z + 0.5) * tl.log(t)
+        - t
+        + tl.log(2.5066282746310005024157652848110 * n_poly / d_poly)
     )
-    sqrt_2pi = 2.5066282746310005024157652848110
-    t = z + lanczos_g + 0.5
-    log_gamma_a = (z + 0.5) * tl.log(t) - t + tl.log(sqrt_2pi * p)
     log_gamma_a = tl.where(
         reflect_mask,
         _LOG_PI - tl.log(tl.abs(tl.sin(pi * a_f32))) - log_gamma_a,
@@ -97,30 +139,37 @@ def igamma_kernel(
     series_result = 1.0 / a_f32
     series_term = 1.0 / a_f32
     ap = a_f32
-    for i in range(60):
+    for i in range(16):
         ap = ap + 1.0
         series_term = series_term * x_f32 / ap
         series_result = series_result + series_term
+    need_more = (
+        tl.max(tl.where(series_result < 1.0e30, series_term / series_result, 1.0))
+        > 1.0e-8
+    )
+    for i in range(44):
+        if need_more:
+            ap = ap + 1.0
+            series_term = series_term * x_f32 / ap
+            series_result = series_result + series_term
     series_res = ax * series_result
 
     # ========== Branch 2: continued fraction (fast-converging for x >= a + 1) ==========
     # Lentz's method for Q(a,x); P(a,x) = 1 - Q(a,x). Used where x >= a + 1, where
     # it converges in a few dozen iterations, so 60 iterations is safely enough.
-    #
-    # Both branches together are ~85% of the kernel cost and only one is ever
-    # selected per element, so the continued fraction is skipped whenever every
-    # lane of the block satisfies x < a + 1 (block-uniform test, mirroring what a
-    # SIMT library does when a whole warp takes the same branch).
-    result = series_res
-    if tl.max(x_f32 - a_f32) >= 1.0:
-        fpmin = 1e-30
-        b = x_f32 + 1.0 - a_f32
-        c = b * 0.0 + 1.0e30
-        d = 1.0 / b
-        h = d
-
-        n = 1.0
-        for i in range(60):
+    # The whole block skips the arithmetic when every lane satisfies x < a + 1
+    # (block-uniform test, mirroring what a SIMT library does when a whole warp
+    # takes the same branch); the 60-iteration loop itself stays at the top
+    # level with a per-iteration scalar guard (see the constraint above).
+    fpmin = 1e-30
+    b = x_f32 + 1.0 - a_f32
+    c = b * 0.0 + 1.0e30
+    d = 1.0 / b
+    h = d
+    n = 1.0
+    cf_active = tl.max(x_f32 - a_f32) >= 1.0
+    for i in range(60):
+        if cf_active:
             an = -n * (n - a_f32)
             b = b + 2.0
             d = an * d + b
@@ -132,8 +181,8 @@ def igamma_kernel(
             h = h * delta
             n = n + 1.0
 
-        cf_res = 1.0 - ax * h
-        result = tl.where(small_x, series_res, cf_res)
+    cf_res = 1.0 - ax * h
+    result = tl.where(small_x, series_res, cf_res)
 
     result = tl.where(result_zero, 0.0, result)
 
@@ -146,7 +195,7 @@ def igamma_kernel(
 
 
 def igamma(a, x):
-    logger.debug("GEMS_ENFLAME_GCU400 IGAMMA")
+    logger.debug("GEMS_ENFLAME IGAMMA")
     if not isinstance(a, torch.Tensor):
         raise TypeError("igamma expects a torch.Tensor as the first argument")
     if not isinstance(x, torch.Tensor):
@@ -166,11 +215,51 @@ def igamma(a, x):
 
     output = torch.empty_like(a)
 
-    block_size = 512
+    # BLOCK is pinned to 256: this backend silently miscompiles loop-carried
+    # fp32 vector chains when the load tile reaches >= 2 KB (fp32 BLOCK>=512,
+    # 16-bit BLOCK>=1024): the series/continued-fraction accumulators come back
+    # wrong from the 2nd iteration on (see compiler_issues/
+    # flaggems_igamma_loop_tile_width_miscompile.md). 256 is inside the verified
+    # safe domain for every supported dtype (fp32 <= 256, 16-bit <= 512).
+    block_size = 256
     # Pass a concrete tuple grid: a callable grid forces Triton onto the
     # `JITFunction.run` path, which on this backend costs ~200 ms per launch
     # (~0.1 ms with a tuple grid). That fixed cost dominates every shape.
-    grid = (triton.cdiv(n_elements, block_size),)
+    # grid.x is capped at 65535 and grid.y at 255 on this backend; split the
+    # program axis in 2D when more programs are needed. grid_y targets 32768
+    # programs per row (capped at the 255 grid.y limit), which covers
+    # N <= 255 * 65535 * 256 = 4.3G elements -- far beyond any 3-tensor
+    # working set that fits in device memory.
+    total = triton.cdiv(n_elements, block_size)
+    if total <= 65535:
+        grid = (total,)
+        grid_x, flat = 0, True
+    else:
+        grid_y = min(255, triton.cdiv(total, 32768))
+        grid_x = triton.cdiv(total, grid_y)
+        grid = (grid_x, grid_y)
+        flat = False
     with torch_device_fn.device(a.device):
-        igamma_kernel[grid](a, x, output, n_elements, BLOCK_SIZE=block_size)
+        igamma_kernel[grid](
+            a,
+            x,
+            output,
+            n_elements,
+            grid_x,
+            BLOCK_SIZE=block_size,
+            FLAT=flat,
+            WIDE=n_elements > 2**31 - block_size,
+            # num_warps=4 is pinned inside the empirically verified safe
+            # domain (<= 64 elements per warp): at BLOCK=256 every
+            # num_warps<4 variant of the loop-carried series chain that has
+            # been tested miscompiles silently (from 2 iterations on for
+            # the plain unguarded loop shape; see compiler_issues/
+            # flaggems_igamma_loop_tile_width_miscompile.md and
+            # flaggems_igamma_block512_loopcarry.md). num_warps=2 was
+            # measured 2.2x faster for this exact kernel but sits on an
+            # unproven codegen coincidence (its full-kernel compilation
+            # happened to verify numerically) -- rejected for an ops
+            # library: silent-wrongness risk outweighs the speedup.
+            num_warps=4,
+        )
     return output

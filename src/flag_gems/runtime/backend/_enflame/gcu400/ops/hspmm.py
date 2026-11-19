@@ -24,6 +24,15 @@ from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 
+# Each program processes several nonzero rows per iteration; a fixed grid cap avoids grid=(nnz,) at large nnz
+# (>65535), which would directly trigger a GCU grid.x out-of-bounds error.
+MAX_BLOCK_ROWS = 32
+MAX_GRID = 24
+# Target element count per tile: measurements show N=128→32 rows and N=256→16 rows are optimal, both 4096 elements,
+# i.e. "back-computing the row count from 4096 elements" is the consistent optimum across shapes
+TILE_ELEMS = 4096
+BLOCK_N_CAP = 1024
+
 
 @libentry()
 @triton.jit
@@ -36,44 +45,43 @@ def hspmm_kernel(
     N,
     mat2_stride_0,
     mat2_stride_1,
+    BLOCK_ROWS: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    NUM_ROW_TILES: tl.constexpr,
 ):
-    """Mixed sparse-dense matrix multiply: one program per nnz entry.
+    """混合稀疏-稠密矩阵乘：out_values[i, :] = val[i] * mat2[col[i], :]。
 
-    Row pid of output values equals val[pid] * mat2[col[pid], :], later accumulated into a dense result by
-    PyTorch's sparse tensor according to row_indices. The row index is used only on the host
-    when constructing output indices, so it is no longer passed as a kernel pointer argument (on GCU a sparse
-    COO's _indices() may live on CPU, and passing it triggers launcher pointer validation failure).
+    与「一个 program 只处理一个 nnz」的写法相比，这里按行分块（BLOCK_ROWS 行 ×
+    BLOCK_N 列）并把 grid 固定为 NUM_ROW_TILES，剩余行用 stride 循环覆盖：
+    - grid.x 恒定 ≤ MAX_GRID，nnz 再大也不会越界；
+    - 输出 [nnz, N] 行主序连续，相邻行首尾相接，一次 tl.store 即一个连续大块；
+    - mat2 侧是「按 col 聚集的行」，行内连续，行间跳读，符合 DMA 的最优粒度。
+
+    row 索引只在 host 侧构造输出索引时使用，不作为 kernel 参数（GCU 上稀疏 COO 的
+    _indices() 可能位于 CPU，传入会触发 launcher 指针校验失败）。
     """
+    row_offsets = tl.arange(0, BLOCK_ROWS)
+    col_offsets = tl.arange(0, BLOCK_N)
+    col_mask = col_offsets < N
     pid = tl.program_id(0)
-    if pid >= nnz:
-        return
 
-    # Scalar values and column indices have already been moved to the GCU device on the host
-    val_scalar = tl.load(val_ptr + pid)
-    col_idx = tl.load(col_ptr + pid)
-
-    # Compute the base pointer for mat2[col_idx, :]
-    mat2_row_ptr = mat2_ptr + col_idx * mat2_stride_0
-
-    # Process N in blocks of BLOCK_N
-    for n_start in range(0, N, BLOCK_N):
-        n_offsets = n_start + tl.arange(0, BLOCK_N)
-        mask = n_offsets < N
-
-        # Load mat2[col_idx, n_start:n_start+BLOCK_N]
-        mat2_vals = tl.load(
-            mat2_row_ptr + n_offsets * mat2_stride_1,
-            mask=mask,
-            other=0.0,
+    for row_start in tl.range(pid * BLOCK_ROWS, nnz, NUM_ROW_TILES * BLOCK_ROWS):
+        rows = row_start + row_offsets
+        row_mask = rows < nnz
+        # Read only BLOCK_ROWS scalars per iteration: column indices and nonzero values
+        sparse_cols = tl.load(col_ptr + rows, mask=row_mask, other=0)
+        sparse_vals = tl.load(val_ptr + rows, mask=row_mask, other=0.0)
+        block_mask = row_mask[:, None] & col_mask[None, :]
+        # mat2 gathered by row: src = col[i] * stride_0 + n * stride_1
+        src_offsets = sparse_cols[:, None] * mat2_stride_0 + (
+            col_offsets[None, :] * mat2_stride_1
         )
-
-        # Compute val_scalar * mat2_vals
-        result = val_scalar * mat2_vals
-
-        # Store to out_val[pid, n_start:n_start+BLOCK_N]
-        out_ptr = out_val_ptr + pid * N + n_offsets
-        tl.store(out_ptr, result, mask=mask)
+        gathered = tl.load(mat2_ptr + src_offsets, mask=block_mask, other=0.0)
+        # The start of output row i is fixed at i * N, contiguous within the row
+        dst_offsets = rows[:, None] * N + col_offsets[None, :]
+        tl.store(
+            out_val_ptr + dst_offsets, gathered * sparse_vals[:, None], mask=block_mask
+        )
 
 
 def hspmm(mat1: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
@@ -87,7 +95,7 @@ def hspmm(mat1: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
     Returns:
         Sparse COO tensor of shape (M, N), uncoalesced (one entry per input nnz)
     """
-    logger.debug("GEMS_ENFLAME_GCU400 HSPMM")
+    logger.debug("GEMS_ENFLAME HSPMM")
 
     if mat1.layout != torch.sparse_coo:
         raise ValueError(f"hspmm: mat1 must be sparse COO, got {mat1.layout}")
@@ -118,25 +126,30 @@ def hspmm(mat1: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
         )
 
     # For COO, indices has shape (2, nnz) or (ndim, nnz)
-    # Row indices are used only to build the output sparse tensor (kept on CPU); column indices and values move to the
-    # compute device
+    # Row indices are only used to construct the output sparse tensor (kept on CPU), while column indices and values
+    # must be moved to the compute device;
+    # Combining dtype=long with the device transfer into one call reduces Python-side call overhead.
     if indices.dim() == 1:
         # 1D sparse tensor edge case
         row_indices = torch.zeros(nnz, dtype=torch.long)
-        col_indices = indices.to(torch.long).contiguous().to(compute_device)
+        col_indices = indices.to(dtype=torch.long, device=compute_device).contiguous()
     else:
         row_indices = indices[0].to(torch.long).contiguous()
-        col_indices = indices[1].to(torch.long).contiguous().to(compute_device)
+        col_indices = (
+            indices[1].to(dtype=torch.long, device=compute_device).contiguous()
+        )
     values = values.to(compute_device)
 
     # Allocate output values: shape (nnz, N)
-    out_values = torch.empty((nnz, N), dtype=mat2.dtype, device=mat2.device)
+    out_values = torch.empty((nnz, N), dtype=mat2.dtype, device=compute_device)
 
-    # Launch kernel: one program per nnz entry
-    BLOCK_N = min(triton.next_power_of_2(N), 1024)
-    grid = (nnz,)
+    BLOCK_N = min(triton.next_power_of_2(N), BLOCK_N_CAP)
+    # Back-compute the row block size from the target tile element count, clamped to [1, MAX_BLOCK_ROWS]
+    block_rows = max(1, min(MAX_BLOCK_ROWS, TILE_ELEMS // BLOCK_N))
+    num_row_tiles = min(triton.cdiv(nnz, block_rows), MAX_GRID)
 
-    hspmm_kernel[grid](
+    # Fixed grid + row-stride loop: grid.x does not grow with nnz
+    hspmm_kernel[(num_row_tiles,)](
         col_indices,
         values,
         mat2,
@@ -145,11 +158,16 @@ def hspmm(mat1: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
         N,
         mat2.stride(0),
         mat2.stride(1),
+        BLOCK_ROWS=block_rows,
         BLOCK_N=BLOCK_N,
+        NUM_ROW_TILES=num_row_tiles,
+        num_warps=2,
     )
 
-    # Output sparse COO: indices and values are all on the compute device so to_dense() also lands on device,
-    # easing comparison with the device-side reference (torch_gcu's sparse tensor device field may still show cpu).
+    # Output sparse COO: both indices and values are placed on the compute device, so the to_dense() result also lands
+    # on the device side,
+    # making it easy to compare against the device-side reference implementation (torch_gcu's sparse tensor device field
+    # may still show cpu).
     out_indices = row_indices.to(compute_device).unsqueeze(0)
 
     return torch.sparse_coo_tensor(

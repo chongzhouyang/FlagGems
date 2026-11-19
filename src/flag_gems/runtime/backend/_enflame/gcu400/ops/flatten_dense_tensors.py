@@ -450,39 +450,43 @@ def _flatten_contig_kernel(
     out_ptr,
     meta,
     N,
+    total_chunks,
     BLOCK: tl.constexpr,
     LOG2N: tl.constexpr,
     DT: tl.constexpr,
 ):
     pid = tl.program_id(0)
+    num_pids = tl.num_programs(0)
     coff = meta + (N + 1)
     ptrs = meta + 2 * (N + 1)
-    # binary search: first idx in [1, N] with chunk-prefix[idx] > pid.
-    # The loop variables are scalars: a ``tl.full([1], ...)`` cursor makes every
-    # probe a 1-wide load, and gcu400 then cannot legalize the surrounding
-    # elementwise fusion region ("failed to legalize operation
-    # 'triton_gcu.elementwise_fusion_region'", measured on every metadata
-    # launch).
-    lo = 1
-    hi = N
-    for _ in tl.static_range(LOG2N):
-        mid = (lo + hi) >> 1
-        if tl.load(coff + mid) <= pid:
-            lo = mid + 1
-        else:
-            hi = mid
-    t = lo - 1
-    k = pid - tl.load(coff + t)
-    off_t = tl.load(meta + t)
-    end_t = tl.load(meta + t + 1)
-    ptr_t = tl.load(ptrs + t)
-    start = off_t + k.to(tl.int64) * BLOCK
-    offs = start + tl.arange(0, BLOCK)
-    mask = offs < end_t
-    local = offs - off_t
-    pp = ptr_t.to(tl.pointer_type(DT))
-    x = tl.load(pp + local, mask=mask)
-    tl.store(out_ptr + offs, x, mask=mask)
+    # gcu400 caps grid.x at 65535; walk the remaining chunks.
+    for chunk_id in tl.range(pid, total_chunks, num_pids):
+        # binary search: first idx in [1, N] with chunk-prefix[idx] > chunk_id.
+        # The loop variables are scalars: a ``tl.full([1], ...)`` cursor makes every
+        # probe a 1-wide load, and gcu400 then cannot legalize the surrounding
+        # elementwise fusion region ("failed to legalize operation
+        # 'triton_gcu.elementwise_fusion_region'", measured on every metadata
+        # launch).
+        lo = 1
+        hi = N
+        for _ in tl.static_range(LOG2N):
+            mid = (lo + hi) >> 1
+            if tl.load(coff + mid) <= chunk_id:
+                lo = mid + 1
+            else:
+                hi = mid
+        t = lo - 1
+        k = chunk_id - tl.load(coff + t)
+        off_t = tl.load(meta + t)
+        end_t = tl.load(meta + t + 1)
+        ptr_t = tl.load(ptrs + t)
+        start = off_t + k.to(tl.int64) * BLOCK
+        offs = start + tl.arange(0, BLOCK)
+        mask = offs < end_t
+        local = offs - off_t
+        pp = ptr_t.to(tl.pointer_type(DT))
+        x = tl.load(pp + local, mask=mask)
+        tl.store(out_ptr + offs, x, mask=mask)
 
 
 @triton.jit
@@ -492,6 +496,7 @@ def _flatten_general_kernel(
     shapes,
     strides,
     N,
+    total_chunks,
     BLOCK: tl.constexpr,
     LOG2N: tl.constexpr,
     DT: tl.constexpr,
@@ -499,45 +504,47 @@ def _flatten_general_kernel(
 ):
     # shapes/strides rows are stored reversed (last dim first), padded with shape 1.
     pid = tl.program_id(0)
+    num_pids = tl.num_programs(0)
     coff = meta + (N + 1)
     ptrs = meta + 2 * (N + 1)
-    lo = 1
-    hi = N
-    for _ in tl.static_range(LOG2N):
-        mid = (lo + hi) >> 1
-        if tl.load(coff + mid) <= pid:
-            lo = mid + 1
-        else:
-            hi = mid
-    t = lo - 1
-    k = pid - tl.load(coff + t)
-    off_t = tl.load(meta + t)
-    end_t = tl.load(meta + t + 1)
-    ptr_t = tl.load(ptrs + t)
-    start = off_t + k.to(tl.int64) * BLOCK
-    offs = start + tl.arange(0, BLOCK)
-    mask = offs < end_t
-    local = offs - off_t
-    # decompose logical flat index -> physical element offset (row-major order)
-    #
-    # gcu400 cannot lower a 64-bit integer div/mod inside an elementwise fusion
-    # region ("failed to legalize operation
-    # 'triton_gcu.elementwise_fusion_region'" for every non-contiguous input),
-    # so the per-dimension split runs in int32.  _launch_group keeps groups
-    # whose element count could overflow int32 off this path.
-    acc = local.to(tl.int32)
-    phys = tl.zeros([BLOCK], tl.int64)
-    base_s = shapes + t.to(tl.int64) * MAX_DIM
-    base_r = strides + t.to(tl.int64) * MAX_DIM
-    for d in tl.static_range(MAX_DIM):
-        sd = tl.load(base_s + d).to(tl.int32)
-        st = tl.load(base_r + d)
-        idx = acc % sd
-        acc = acc // sd
-        phys += idx * st
-    pp = ptr_t.to(tl.pointer_type(DT))
-    x = tl.load(pp + phys, mask=mask)
-    tl.store(out_ptr + offs, x, mask=mask)
+    for chunk_id in tl.range(pid, total_chunks, num_pids):
+        lo = 1
+        hi = N
+        for _ in tl.static_range(LOG2N):
+            mid = (lo + hi) >> 1
+            if tl.load(coff + mid) <= chunk_id:
+                lo = mid + 1
+            else:
+                hi = mid
+        t = lo - 1
+        k = chunk_id - tl.load(coff + t)
+        off_t = tl.load(meta + t)
+        end_t = tl.load(meta + t + 1)
+        ptr_t = tl.load(ptrs + t)
+        start = off_t + k.to(tl.int64) * BLOCK
+        offs = start + tl.arange(0, BLOCK)
+        mask = offs < end_t
+        local = offs - off_t
+        # decompose logical flat index -> physical element offset (row-major order)
+        #
+        # gcu400 cannot lower a 64-bit integer div/mod inside an elementwise fusion
+        # region ("failed to legalize operation
+        # 'triton_gcu.elementwise_fusion_region'" for every non-contiguous input),
+        # so the per-dimension split runs in int32.  _launch_group keeps groups
+        # whose element count could overflow int32 off this path.
+        acc = local.to(tl.int32)
+        phys = tl.zeros([BLOCK], tl.int64)
+        base_s = shapes + t.to(tl.int64) * MAX_DIM
+        base_r = strides + t.to(tl.int64) * MAX_DIM
+        for d in tl.static_range(MAX_DIM):
+            sd = tl.load(base_s + d).to(tl.int32)
+            st = tl.load(base_r + d)
+            idx = acc % sd
+            acc = acc // sd
+            phys += idx * st
+        pp = ptr_t.to(tl.pointer_type(DT))
+        x = tl.load(pp + phys, mask=mask)
+        tl.store(out_ptr + offs, x, mask=mask)
 
 
 def _launch_group(out, group, group_offsets, tl_dt):
@@ -581,12 +588,14 @@ def _launch_group(out, group, group_offsets, tl_dt):
                 flat[sbase + t.dim() - 1 - d] = t.shape[d]
                 flat[rbase + t.dim() - 1 - d] = t.stride(d)
     meta = torch.tensor(flat, dtype=torch.int64, device=dev)
+    grid = (min(total_chunks, 65535),)
     with torch_device_fn.device(dev):
         if contig:
-            _flatten_contig_kernel[(total_chunks,)](
+            _flatten_contig_kernel[grid](
                 out,
                 meta,
                 N,
+                total_chunks,
                 BLOCK=_BLOCK,
                 LOG2N=LOG2N,
                 DT=tl_dt,
@@ -595,12 +604,13 @@ def _launch_group(out, group, group_offsets, tl_dt):
         else:
             shapes = meta[shapes_base : shapes_base + N * max_dim].view(N, max_dim)
             strides = meta[shapes_base + N * max_dim :].view(N, max_dim)
-            _flatten_general_kernel[(total_chunks,)](
+            _flatten_general_kernel[grid](
                 out,
                 meta,
                 shapes,
                 strides,
                 N,
+                total_chunks,
                 BLOCK=_BLOCK,
                 LOG2N=LOG2N,
                 DT=tl_dt,
@@ -611,7 +621,7 @@ def _launch_group(out, group, group_offsets, tl_dt):
 
 def flatten_dense_tensors(tensors):
     """``aten::flatten_dense_tensors(Tensor[] tensors) -> Tensor``."""
-    logger.debug("GEMS_ENFLAME_GCU400 FLATTEN_DENSE_TENSORS")
+    logger.debug("GEMS_ENFLAME FLATTEN_DENSE_TENSORS")
     # Iterating a bare Tensor yields its rows and would silently flatten only
     # the first dimensions, so reject the same inputs the reference rejects.
     if isinstance(tensors, torch.Tensor):
@@ -707,6 +717,11 @@ def flatten_dense_tensors(tensors):
         and 2 <= n <= 8
         and total < (1 << 32)
         and (contig or (n <= 4 and max(t.dim() for t in ts) <= 4))
+        # The 2-D fast-path grid is (n, max_chunks); gcu400 caps grid.y at 255.
+        # Compute the bound with the smallest block the dtype table uses (1024)
+        # so the estimate is conservative, and let big totals take the
+        # metadata path's grid-stride kernel instead.
+        and max((m + 1023) // 1024 for m in numels) <= 255
     ):
         tl_dt = _TL_DTYPE[out_dtype]
         # Launch-config specialization by element size: 16-bit dtypes prefer

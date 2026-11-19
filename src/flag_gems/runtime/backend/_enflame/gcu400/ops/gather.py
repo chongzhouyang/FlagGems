@@ -239,7 +239,10 @@ def _gather_2d_fast(inp, dim, index, out):
     """Optimized path for 2D gather: row-based kernel avoids modulo."""
     M = index.shape[0]
     N_idx = index.shape[1]
-    BLOCK_N = min(triton.next_power_of_2(N_idx), 8192)
+    # BLOCK_N capped at 2048: gather is data-dependent random access; a larger tile only lengthens a single
+    # memory-access queue without increasing parallelism; on a private probe 8192→2048 is 5%~13% faster on
+    # (1024,1024)/(4096,4096).
+    BLOCK_N = min(triton.next_power_of_2(N_idx), 2048)
     grid_dim = min(M, NUM_SIPS * 2)
 
     with torch_device_fn.device(inp.device):

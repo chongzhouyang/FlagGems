@@ -35,6 +35,8 @@ _FLAT_COPY_BLOCK = 8192
 _FLAT_COPY_GRID = 48
 # Offsets are int32, so the last masked tile must still fit in an int32.
 _FLAT_COPY_MAX_ELEMS = 2**31 - 1 - _FLAT_COPY_BLOCK
+# 256 MB of words: past this the deep tile (4x block, 2x CTAs, 8 warps) wins
+_FLAT_COPY_DEEP_ELEMS = 64 * 1024 * 1024
 
 
 @pointwise_dynamic(is_tensor=[True], promotion_methods=[(0, "DEFAULT")])
@@ -110,14 +112,20 @@ def _flat_copy(dst: torch.Tensor, src: torch.Tensor, plan) -> bool:
         out = dst.reshape(-1).view(word_dtype)
     except (RuntimeError, TypeError, NotImplementedError):
         return False
-    grid = (min(_FLAT_COPY_GRID, triton.cdiv(n_elements, _FLAT_COPY_BLOCK)),)
+    # Use deeper tiles + more CTAs + 8 warps for large copies: above 256MB, the grid-stride
+    # loop overhead significantly eats into bandwidth (268M fp16 words: 363us -> 351us)
+    if n_elements >= _FLAT_COPY_DEEP_ELEMS:
+        block_size, grid_cap, num_warps = _FLAT_COPY_BLOCK * 4, _FLAT_COPY_GRID * 2, 8
+    else:
+        block_size, grid_cap, num_warps = _FLAT_COPY_BLOCK, _FLAT_COPY_GRID, 4
+    grid = (min(grid_cap, triton.cdiv(n_elements, block_size)),)
     _flat_copy_kernel[grid](
         view,
         out,
         n_elements,
-        BLOCK_SIZE=_FLAT_COPY_BLOCK,
-        GRID_SIZE=_FLAT_COPY_GRID,
-        num_warps=4,
+        BLOCK_SIZE=block_size,
+        GRID_SIZE=grid_cap,
+        num_warps=num_warps,
     )
     return True
 
@@ -230,7 +238,7 @@ def _expand_like(src: torch.Tensor, target_shape: torch.Size) -> torch.Tensor:
 def copy(
     template: torch.Tensor, src: torch.Tensor, *, non_blocking: Optional[bool] = False
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 COPY")
+    logger.debug("GEMS_ENFLAME COPY")
     out = torch.empty_strided(
         template.size(), template.stride(), dtype=template.dtype, device=template.device
     )
@@ -239,7 +247,7 @@ def copy(
 
 
 def copy_(dst: torch.Tensor, src: torch.Tensor, non_blocking: bool = False):
-    logger.debug("GEMS_ENFLAME_GCU400 COPY_")
+    logger.debug("GEMS_ENFLAME COPY_")
     if isinstance(src, (int, float, bool)):
         src = torch.tensor(src, device=dst.device)
     elif not isinstance(src, torch.Tensor):

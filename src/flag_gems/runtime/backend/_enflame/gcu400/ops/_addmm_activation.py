@@ -225,7 +225,7 @@ def _addmm_activation(bias, mat1, mat2, *, beta=1, alpha=1, use_gelu=False, out=
     non-out entry point reuses the deterministic dispatcher.  The old kernel
     stays reachable through ``FALLBACK_TO_ORIGINAL``.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 _ADDMM_ACTIVATION")
+    logger.debug("GEMS_ENFLAME _ADDMM_ACTIVATION")
     if FALLBACK_TO_ORIGINAL:
         return _addmm_activation_original(
             bias, mat1, mat2, beta=beta, alpha=alpha, use_gelu=use_gelu, out=out

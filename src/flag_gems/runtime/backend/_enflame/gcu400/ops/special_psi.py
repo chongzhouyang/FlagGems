@@ -266,41 +266,53 @@ def _trig_body64(x):
 @triton.jit
 def _psi_flat32(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
-    r = _body32(x)
-    tl.store(o_ptr + offs, r.to(o_ptr.dtype.element_ty), mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
+        r = _body32(x)
+        tl.store(o_ptr + offs, r.to(o_ptr.dtype.element_ty), mask=mask)
 
 
 @triton.jit
 def _psi_flat64(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    x = tl.load(x_ptr + offs, mask=mask).to(tl.float64)
-    tl.store(o_ptr + offs, _body64(x), mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        x = tl.load(x_ptr + offs, mask=mask).to(tl.float64)
+        tl.store(o_ptr + offs, _body64(x), mask=mask)
 
 
 @triton.jit
 def _trig_flat32(x_ptr, g_ptr, o_ptr, n, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
-    g = tl.load(g_ptr + offs, mask=mask).to(tl.float32)
-    r = _trig_body(x) * g
-    tl.store(o_ptr + offs, r.to(o_ptr.dtype.element_ty), mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
+        g = tl.load(g_ptr + offs, mask=mask).to(tl.float32)
+        r = _trig_body(x) * g
+        tl.store(o_ptr + offs, r.to(o_ptr.dtype.element_ty), mask=mask)
 
 
 @triton.jit
 def _trig_flat64(x_ptr, g_ptr, o_ptr, n, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    x = tl.load(x_ptr + offs, mask=mask).to(tl.float64)
-    g = tl.load(g_ptr + offs, mask=mask).to(tl.float64)
-    tl.store(o_ptr + offs, _trig_body64(x) * g, mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        x = tl.load(x_ptr + offs, mask=mask).to(tl.float64)
+        g = tl.load(g_ptr + offs, mask=mask).to(tl.float64)
+        tl.store(o_ptr + offs, _trig_body64(x) * g, mask=mask)
 
 
 # --------------------------------------------------------------------------- #
@@ -326,22 +338,30 @@ def _decompose(offs, shp_ptr, xst_ptr, ost_ptr, ndim):
 @triton.jit
 def _psi_strided32(x_ptr, o_ptr, n, shp_ptr, xst_ptr, ost_ptr, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, tl.num_programs(1))
-    x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float32)
-    r = _body32(x)
-    tl.store(o_ptr + oo, r.to(o_ptr.dtype.element_ty), mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    ndim = tl.num_programs(1)
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, ndim)
+        x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float32)
+        r = _body32(x)
+        tl.store(o_ptr + oo, r.to(o_ptr.dtype.element_ty), mask=mask)
 
 
 @triton.jit
 def _psi_strided64(x_ptr, o_ptr, n, shp_ptr, xst_ptr, ost_ptr, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, tl.num_programs(1))
-    x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float64)
-    tl.store(o_ptr + oo, _body64(x), mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    ndim = tl.num_programs(1)
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, ndim)
+        x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float64)
+        tl.store(o_ptr + oo, _body64(x), mask=mask)
 
 
 @triton.jit
@@ -349,13 +369,17 @@ def _trig_strided32(
     x_ptr, g_ptr, o_ptr, n, shp_ptr, xst_ptr, ost_ptr, BLOCK: tl.constexpr
 ):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, tl.num_programs(1))
-    x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float32)
-    g = tl.load(g_ptr + oo, mask=mask, other=0.0).to(tl.float32)
-    r = _trig_body(x) * g
-    tl.store(o_ptr + oo, r.to(o_ptr.dtype.element_ty), mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    ndim = tl.num_programs(1)
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, ndim)
+        x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float32)
+        g = tl.load(g_ptr + oo, mask=mask, other=0.0).to(tl.float32)
+        r = _trig_body(x) * g
+        tl.store(o_ptr + oo, r.to(o_ptr.dtype.element_ty), mask=mask)
 
 
 @triton.jit
@@ -363,12 +387,16 @@ def _trig_strided64(
     x_ptr, g_ptr, o_ptr, n, shp_ptr, xst_ptr, ost_ptr, BLOCK: tl.constexpr
 ):
     pid = tl.program_id(0)
-    offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
-    xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, tl.num_programs(1))
-    x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float64)
-    g = tl.load(g_ptr + oo, mask=mask, other=0.0).to(tl.float64)
-    tl.store(o_ptr + oo, _trig_body64(x) * g, mask=mask)
+    num_pids = tl.num_programs(0)
+    num_blocks = (n + BLOCK - 1) // BLOCK
+    ndim = tl.num_programs(1)
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offs = block_id * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        xo, oo = _decompose(offs, shp_ptr, xst_ptr, ost_ptr, ndim)
+        x = tl.load(x_ptr + xo, mask=mask, other=1.0).to(tl.float64)
+        g = tl.load(g_ptr + oo, mask=mask, other=0.0).to(tl.float64)
+        tl.store(o_ptr + oo, _trig_body64(x) * g, mask=mask)
 
 
 # --------------------------------------------------------------------------- #
@@ -398,14 +426,14 @@ def _psi_launch(x, out):
     dtype = out.dtype
     if x.is_contiguous() and out.is_contiguous():
         block, nw = _flat_cfg(n)
-        grid = (triton.cdiv(n, block),)
+        grid = (min(triton.cdiv(n, block), 65535),)
         if dtype == torch.float64:
             _psi_flat64[grid](x, out, n, BLOCK=block, num_warps=nw)
         else:
             _psi_flat32[grid](x, out, n, BLOCK=block, num_warps=nw)
     else:
         shp, xs, os_, ndim = _strided_args(x, out)
-        grid = (triton.cdiv(n, _BLOCK), ndim)
+        grid = (min(triton.cdiv(n, _BLOCK), 65535), ndim)
         if dtype == torch.float64:
             _psi_strided64[grid](
                 x, out, n, shp, xs, os_, BLOCK=_BLOCK, num_warps=_NUM_WARPS
@@ -421,14 +449,14 @@ def _trig_launch(x, g, out):
     dtype = out.dtype
     if x.is_contiguous() and g.is_contiguous() and out.is_contiguous():
         block, nw = _flat_cfg(n)
-        grid = (triton.cdiv(n, block),)
+        grid = (min(triton.cdiv(n, block), 65535),)
         if dtype == torch.float64:
             _trig_flat64[grid](x, g, out, n, BLOCK=block, num_warps=nw)
         else:
             _trig_flat32[grid](x, g, out, n, BLOCK=block, num_warps=nw)
     else:
         shp, xs, os_, ndim = _strided_args(x, out)
-        grid = (triton.cdiv(n, _BLOCK), ndim)
+        grid = (min(triton.cdiv(n, _BLOCK), 65535), ndim)
         if dtype == torch.float64:
             _trig_strided64[grid](
                 x, g, out, n, shp, xs, os_, BLOCK=_BLOCK, num_warps=_NUM_WARPS
@@ -471,7 +499,7 @@ class _PsiFunction(torch.autograd.Function):
 
 def special_psi(self, out=None):
     """Elementwise digamma (psi), matching aten::special_psi semantics."""
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_PSI")
+    logger.debug("GEMS_ENFLAME SPECIAL_PSI")
     if not isinstance(self, torch.Tensor):
         raise TypeError("special_psi expects a torch.Tensor as the first argument")
 
@@ -509,5 +537,5 @@ def special_psi(self, out=None):
 
 def special_psi_out(self, out):
     """``aten::special_psi.out``: write the result into ``out`` and return it."""
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_PSI_OUT")
+    logger.debug("GEMS_ENFLAME SPECIAL_PSI_OUT")
     return special_psi(self, out=out)

@@ -23,6 +23,11 @@ into the same shape-folding and autograd logic, and adds the zero-sized fast
 exit that a 2-D matmul with an empty M or N needs (a zero grid is not a legal
 launch).
 
+The batched arm composes the backend ``bmm`` op, whose hybrid dispatch routes
+saturated problems (``B*M*N*K >= 2^29``) to the native primo++ kernel captured
+at import time (bit-exact, near-zero dispatch overhead) and keeps the Triton
+``bmm_kernel`` below the line; launching the Triton kernel for every size left
+the large core cases at 0.51-0.84x of torch (see ``bmm.py`` for the sweep).
 """
 
 import logging
@@ -32,10 +37,7 @@ import triton
 import triton.language as tl
 
 from flag_gems.runtime import torch_device_fn
-from flag_gems.runtime.backend._enflame.gcu400.ops.bmm import (
-    _select_bmm_config,
-    bmm_kernel,
-)
+from flag_gems.runtime.backend._enflame.gcu400.ops.bmm import bmm
 from flag_gems.runtime.backend._enflame.gcu400.ops.mm import mm
 
 logger = logging.getLogger(__name__)
@@ -99,66 +101,19 @@ def _tiny_mm(a, b):
     return out
 
 
-def _select_linalg_bmm_config(Batch, M, N, K, dtype):
-    """Return this operator's dedicated batched GEMM tile; the baseline keeps bmm's deterministic tiering."""
-    block_m, block_n, block_k, num_warps, num_stages, _ = _select_bmm_config(
-        Batch, M, N, K, dtype
-    )
-    group_m = 8
-    # STRATEGY_BLOCK_START
-    if M >= 4096 and N >= 4096 and Batch >= 8 and dtype == torch.float32:
-        block_m, block_n, block_k, num_warps = 128, 256, 128, 2
-    # STRATEGY_BLOCK_END
-    return block_m, block_n, block_k, num_warps, num_stages, group_m
-
-
 def _linalg_bmm(a, b):
-    """Reuse bmm_kernel but launch with this operator's own tile tier, leaving the generic bmm implementation
-    untouched."""
-    a = a.contiguous()
-    b = b.contiguous()
-    Batch, M, K = a.shape
-    N = b.shape[2]
-    out = torch.empty((Batch, M, N), dtype=a.dtype, device=a.device)
-    (
-        block_m,
-        block_n,
-        block_k,
-        num_warps,
-        num_stages,
-        group_m,
-    ) = _select_linalg_bmm_config(Batch, M, N, K, a.dtype)
-    # Only when all three dimensions are divisible by the tile can the unmasked compile-time fast path be used.
-    even = M % block_m == 0 and N % block_n == 0 and K % block_k == 0
-    grid = (Batch * triton.cdiv(M, block_m) * triton.cdiv(N, block_n),)
-    with torch_device_fn.device(a.device):
-        bmm_kernel[grid](
-            a,
-            b,
-            out,
-            Batch,
-            M,
-            N,
-            K,
-            a.stride(0),
-            a.stride(1),
-            a.stride(2),
-            b.stride(0),
-            b.stride(1),
-            b.stride(2),
-            out.stride(0),
-            out.stride(1),
-            out.stride(2),
-            dot_out_dtype=tl.float32,
-            BLOCK_M=block_m,
-            BLOCK_N=block_n,
-            BLOCK_K=block_k,
-            GROUP_M=group_m,
-            EVEN=even,
-            num_warps=num_warps,
-            num_stages=num_stages,
-        )
-    return out
+    """复用本 backend 的 bmm 算子（组合复用，不改动 bmm 通用实现）。
+
+    bmm 内部已是混合分派：饱和段（B*M*N*K >= 2^29）委托 import 期捕获的
+    native primo++ kernel（capture + call_boxed，bit 级一致、近零派发开销），
+    线下段走 bmm_kernel 的确定性 tile 分档——与本模块此前直接启动的是同一个
+    kernel、同一套小形状档位。此前本函数对一切尺寸直接启动 Triton kernel，
+    绕过了该分派，令 core bench 的 12 个大 case 只有 0.51-0.84x：Triton GEMM
+    吞吐结构性封顶在 145-165 TFLOPS，native pipeline 到 276-297 TFLOPS
+    （10 配置扫描确认无调参空间，bmm job j20261111073819_8d5ecfcd，
+    mm/baddbmm/router_gemm 同款分派）。
+    """
+    return bmm(a, b)
 
 
 class LinalgMatmulFunction(torch.autograd.Function):
@@ -305,5 +260,5 @@ def linalg_matmul(input, other):
 
     This is an alias for torch.linalg.matmul.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 LINALG_MATMUL")
+    logger.debug("GEMS_ENFLAME LINALG_MATMUL")
     return LinalgMatmulFunction.apply(input, other)

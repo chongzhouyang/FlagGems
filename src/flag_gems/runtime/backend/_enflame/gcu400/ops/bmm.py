@@ -74,22 +74,57 @@ def _should_delegate_to_native(A, B):
     return Batch * M * N * K >= _NATIVE_WORK_THRESHOLD
 
 
-def _select_bmm_config(Batch, M, N, K, dtype):
-    # Select GEMM tiles deterministically by dtype and shape tier, replacing libtuner autotune.
-    # From the same-source sweep: BM=128/BN=256 is generally optimal; fp16/bf16 prefers BK=256/w=4,
-    # fp32 prefers BK=128/w=2; very large batches of big square matrices need larger BM or smaller BK to avoid
-    # exceeding the grid.x hardware limit and keep pipeline efficiency; tiny K / tiny shapes use small tiles to reduce
-    # waste.
-    # Small-shape tier (the only Triton tier on the delegated path) measured: fp16/bf16 use (128,128,128,w4);
-    # fp32 at (2,384^3) with (64,128,128,w4,ns2) is ~7% faster (16.0 -> 14.9us, median).
+# Hardware DSM (distributed shared memory) budget of one GCU400 cluster. The
+# staged A/B tiles of every software-pipeline stage live there, so a tile table
+# that ignores this limit fails to compile ("out of resource: dsm memory").
+_DSM_LIMIT_BYTES = 512 * 1024
+
+
+def _pow2_ceil(value):
+    return 1 << max(0, int(value) - 1).bit_length()
+
+
+def _clamp_tile(dim, tile, floor=64):
+    # Never request a tile far larger than the problem dimension. Oversized
+    # tiles both waste DSM and overflow it: (B, 64, 1, 4096) used to request a
+    # 256-wide N tile for a single output column and failed to compile.
+    #
+    # The floor of 64 is a correctness guard, not just padding: on GCU400 the
+    # unmasked (EVEN) store/download path silently computes wrong values for
+    # BLOCK_M in {16, 32} combined with BLOCK_N >= 256, e.g. (2,32,512,4096)
+    # with (32,256,256) returns relerr ~2.7 while (32,128,256) and
+    # (64,256,256) are exact. Keeping BLOCK_M >= 64 avoids that region.
+    if dim >= tile:
+        return tile
+    return max(floor, min(tile, _pow2_ceil(dim)))
+
+
+def _fit_num_stages(block_m, block_n, block_k, elem_bytes, num_stages):
+    # Shrink the software pipeline until the staged tiles fit the DSM budget.
+    while num_stages > 1:
+        staged = (block_m * block_k + block_k * block_n) * elem_bytes * num_stages
+        if staged <= _DSM_LIMIT_BYTES:
+            break
+        num_stages -= 1
+    return num_stages
+
+
+def _select_gemm_config(Batch, M, N, K, dtype):
+    # Single source of truth for the GEMM tile table, shared by bmm / bmm_out /
+    # baddbmm / baddbmm_out / baddbmm_ (all of them compute the same batched
+    # GEMM core; baddbmm only adds a stride-based bias epilogue).
+    #
+    # Tiles were swept per shape tier on GCU400 (4-1, 2 clusters x 12 SIPs):
+    #   * (2,384^3)  fp16/bf16: (128,128,512,w4,ns2) 13.4us vs (128,128,256) 14.7us
+    #     vs the previous (256,128,128) 16.9us and (64,128,128,w1) 25.3us.
+    #     A 512-deep K block keeps the inner loop at one masked iteration.
+    #   * (2,384^3)  fp32: (128,128,512,w2,ns2) is the same shape as the fp16 win.
+    #   * saturated shapes (>= 4096^2, batch >= 8) keep the wide fp16 tile.
     num_stages = 3
     if K < 128:
-        block_m, block_n, block_k, num_warps = 64, 64, 32, 4
+        block_m, block_n, block_k, num_warps, num_stages = 64, 64, 32, 4, 2
     elif M <= 512 and N <= 512 and K <= 512:
-        if dtype == torch.float32:
-            block_m, block_n, block_k, num_warps, num_stages = 64, 128, 128, 4, 2
-        else:
-            block_m, block_n, block_k, num_warps = 128, 128, 128, 4
+        block_m, block_n, block_k, num_warps, num_stages = 128, 128, 512, 4, 2
     elif M >= 4096 and N >= 4096 and Batch >= 8:
         if dtype == torch.float32:
             block_m, block_n, block_k, num_warps = 256, 128, 128, 4
@@ -100,11 +135,29 @@ def _select_bmm_config(Batch, M, N, K, dtype):
     else:
         block_m, block_n, block_k, num_warps = 128, 256, 256, 4
 
+    block_m = _clamp_tile(M, block_m)
+    block_n = _clamp_tile(N, block_n)
+    block_k = _clamp_tile(K, block_k, floor=16)
+    if block_n > 256 and block_m < 128:
+        # Keep the wide-N tiles on tall enough blocks; see _clamp_tile notes.
+        block_n = 256
+    elem_bytes = 4 if dtype in (torch.float32, torch.float64) else 2
+    num_stages = _fit_num_stages(block_m, block_n, block_k, elem_bytes, num_stages)
+
     # Exact decision: only when all three dimensions are divisible by the actually selected tiles are load/store
     # free of out-of-bounds access, in which case an unmasked fast path is compiled; otherwise use the masked generic
     # path.
     even = M % block_m == 0 and N % block_n == 0 and K % block_k == 0
     return block_m, block_n, block_k, num_warps, num_stages, even
+
+
+# Conservative last-resort tile used when the primary config exceeds the DSM
+# budget at compile time (keeps the operator usable instead of raising).
+_SAFE_FALLBACK_CONFIG = (64, 64, 64, 4, 2)
+
+
+def _select_bmm_config(Batch, M, N, K, dtype):
+    return _select_gemm_config(Batch, M, N, K, dtype)
 
 
 @libentry()
@@ -210,8 +263,38 @@ def _launch_bmm(A, B, out, Batch, M, N, K):
     block_m, block_n, block_k, num_warps, num_stages, even = _select_bmm_config(
         Batch, M, N, K, A.dtype
     )
+    _run_bmm_kernel(
+        A,
+        B,
+        out,
+        Batch,
+        M,
+        N,
+        K,
+        block_m,
+        block_n,
+        block_k,
+        num_warps,
+        num_stages,
+        even,
+    )
+
+
+def _run_bmm_kernel(
+    A, B, out, Batch, M, N, K, block_m, block_n, block_k, num_warps, num_stages, even
+):
     grid = (Batch * triton.cdiv(M, block_m) * triton.cdiv(N, block_n),)
-    bmm_kernel[grid](
+    launch = dict(
+        dot_out_dtype=tl.float32,
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        BLOCK_K=block_k,
+        GROUP_M=8,
+        EVEN=even,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    )
+    args = (
         A,
         B,
         out,
@@ -228,15 +311,43 @@ def _launch_bmm(A, B, out, Batch, M, N, K):
         out.stride(0),
         out.stride(1),
         out.stride(2),
-        dot_out_dtype=tl.float32,
-        BLOCK_M=block_m,
-        BLOCK_N=block_n,
-        BLOCK_K=block_k,
-        GROUP_M=8,
-        EVEN=even,
-        num_warps=num_warps,
-        num_stages=num_stages,
     )
+    try:
+        bmm_kernel[grid](*args, **launch)
+    except triton.runtime.errors.OutOfResources:
+        # The selected tiles do not fit the hardware DSM budget for this shape;
+        # retry once with the conservative tile instead of failing the operator.
+        block_m, block_n, block_k, num_warps, num_stages = _SAFE_FALLBACK_CONFIG
+        block_m = _clamp_tile(M, block_m)
+        block_n = _clamp_tile(N, block_n)
+        block_k = _clamp_tile(K, block_k, floor=16)
+        even = M % block_m == 0 and N % block_n == 0 and K % block_k == 0
+        grid = (Batch * triton.cdiv(M, block_m) * triton.cdiv(N, block_n),)
+        bmm_kernel[grid](
+            *args,
+            dot_out_dtype=tl.float32,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            BLOCK_K=block_k,
+            GROUP_M=8,
+            EVEN=even,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
+
+
+def _as_gemm_friendly(A, B):
+    # The kernel indexes A as [m, k] and B as [k, n] using explicit strides, so
+    # any layout with a unit stride along the *inner* dot axis is fed directly.
+    # Forcing .contiguous() on a transposed B used to materialize a copy through
+    # an extra kernel: (2,512^3) measured 24.1us copy+kernel vs 19.5us strided
+    # (native 25.1us). Only layouts with no unit stride on either axis (e.g. a
+    # sliced/broadcast view) still get a copy.
+    if A.stride(2) != 1 and not A.is_contiguous():
+        A = A.contiguous()
+    if B.stride(2) != 1 and B.stride(1) != 1 and not B.is_contiguous():
+        B = B.contiguous()
+    return A, B
 
 
 def bmm(A, B):
@@ -249,8 +360,7 @@ def bmm(A, B):
         return _NATIVE_BMM.call_boxed(_DEVICE_KEYSET, A, B)
     Batch, M, K = A.shape
     _, _, N = B.shape
-    A = A.contiguous()
-    B = B.contiguous()
+    A, B = _as_gemm_friendly(A, B)
     out = torch.empty((Batch, M, N), dtype=A.dtype, device=A.device)
     _launch_bmm(A, B, out, Batch, M, N, K)
     return out
@@ -264,7 +374,6 @@ def bmm_out(A, B, out):
         return _NATIVE_BMM_OUT.call_boxed(_DEVICE_KEYSET, A, B, out=out)
     Batch, M, K = A.shape
     _, _, N = B.shape
-    A = A.contiguous()
-    B = B.contiguous()
+    A, B = _as_gemm_friendly(A, B)
     _launch_bmm(A, B, out, Batch, M, N, K)
     return out

@@ -35,28 +35,33 @@ def small_n_log_softmax_kernel(
     M,
     N,
     stride_m,
+    num_rows,
     BLOCK_N: tl.constexpr,
 ):
     """Kernel for small N (N <= 1024): single warp, single pass scan."""
-    row_id = tl.program_id(0)
+    pid = tl.program_id(0)
+    num_pids = tl.num_programs(0)
     col_offsets = tl.arange(0, BLOCK_N)
     mask = col_offsets < N
 
-    # Load the entire row in one go
-    row = tl.load(
-        input_ptr + row_id * stride_m + col_offsets, mask=mask, other=-float("inf")
-    ).to(tl.float32)
+    # Grid-stride over the M*K rows: the core shapes ask for up to 2**20 rows,
+    # far above the gcu400 grid.x limit of 65535.
+    for row_id in tl.range(pid, num_rows, num_pids):
+        # Load the entire row in one go
+        row = tl.load(
+            input_ptr + row_id * stride_m + col_offsets, mask=mask, other=-float("inf")
+        ).to(tl.float32)
 
-    # Single pass: compute max, then exp and sum
-    row_max = tl.max(row, axis=0)
-    row_shifted = row - row_max
-    exp_row = tl.exp(row_shifted)
-    sum_exp = tl.sum(exp_row, axis=0)
-    log_sum = tl.log(sum_exp)
-    out = row_shifted - log_sum
+        # Single pass: compute max, then exp and sum
+        row_max = tl.max(row, axis=0)
+        row_shifted = row - row_max
+        exp_row = tl.exp(row_shifted)
+        sum_exp = tl.sum(exp_row, axis=0)
+        log_sum = tl.log(sum_exp)
+        out = row_shifted - log_sum
 
-    # Store result
-    tl.store(output_ptr + row_id * stride_m + col_offsets, out, mask=mask)
+        # Store result
+        tl.store(output_ptr + row_id * stride_m + col_offsets, out, mask=mask)
 
 
 @libentry()
@@ -109,7 +114,7 @@ def large_n_log_softmax_kernel(
 
 
 def special_log_softmax(self, dim, dtype=None):
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_LOG_SOFTMAX")
+    logger.debug("GEMS_ENFLAME SPECIAL_LOG_SOFTMAX")
 
     assert dim >= -self.ndim and dim < self.ndim, "Invalid dim"
     dim = dim % self.ndim
@@ -136,7 +141,7 @@ def special_log_softmax(self, dim, dtype=None):
             # For dim=1 (most common case with contiguous tensor), stride is stride(0)
             # For dim=0, stride is stride(1) which is the full row stride
             BLOCK_N = triton.next_power_of_2(N)
-            grid = (M * K,)
+            grid = (min(M * K, 65535),)
             # Get the stride of dimension that's one step after the reduction dim
             # For contiguous tensor, this is inp.stride(dim - 1) when dim > 0
             # For dim=1, this is inp.stride(0) = shape[1]
@@ -147,6 +152,7 @@ def special_log_softmax(self, dim, dtype=None):
                 M,
                 N,
                 row_stride,
+                M * K,
                 BLOCK_N=BLOCK_N,
             )
         else:

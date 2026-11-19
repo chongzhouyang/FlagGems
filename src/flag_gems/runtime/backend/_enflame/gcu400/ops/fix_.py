@@ -25,24 +25,29 @@ from flag_gems.runtime import torch_device_fn
 logger = logging.getLogger(__name__)
 
 
+MAX_GRID = 48
+
+
 @triton.jit
 def _fix_inplace_kernel(x_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
+    num_pids = tl.num_programs(axis=0)
+    num_blocks = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
 
-    x = tl.load(x_ptr + offsets, mask=mask)
+        x = tl.load(x_ptr + offsets, mask=mask)
 
-    # Upcast to fp32 for stable math, then cast back to input dtype.
-    # Truncation toward zero: floor for x >= 0, ceil for x < 0.
-    x_fp32 = x.to(tl.float32)
-    res_pos = tl.floor(x_fp32)
-    res_neg = tl.ceil(x_fp32)
-    res_fp32 = tl.where(x_fp32 >= 0, res_pos, res_neg)
-    res = res_fp32.to(x.dtype)
+        # Upcast to fp32 for stable math, then cast back to input dtype.
+        # Truncation toward zero: floor for x >= 0, ceil for x < 0.
+        x_fp32 = x.to(tl.float32)
+        res_pos = tl.floor(x_fp32)
+        res_neg = tl.ceil(x_fp32)
+        res_fp32 = tl.where(x_fp32 >= 0, res_pos, res_neg)
+        res = res_fp32.to(x.dtype)
 
-    tl.store(x_ptr + offsets, res, mask=mask)
+        tl.store(x_ptr + offsets, res, mask=mask)
 
 
 def fix_(self: torch.Tensor):
@@ -51,7 +56,7 @@ def fix_(self: torch.Tensor):
     In-place truncation toward zero for floating tensors.
     Integer tensors are left unchanged (no-op).
     """
-    logger.debug("GEMS_ENFLAME_GCU400 FIX_")
+    logger.debug("GEMS_ENFLAME FIX_")
 
     if self.is_complex():
         # Fallback for complex dtypes not supported by Triton.
@@ -68,7 +73,7 @@ def fix_(self: torch.Tensor):
 
     x_contig = self.contiguous()
 
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    grid = (min(triton.cdiv(n_elements, 1024), MAX_GRID),)
     with torch_device_fn.device(self.device):
         _fix_inplace_kernel[grid](x_contig, n_elements, BLOCK_SIZE=1024)
 

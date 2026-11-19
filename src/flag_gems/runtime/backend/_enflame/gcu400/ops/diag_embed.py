@@ -5,12 +5,24 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""GCU400 专属 ``diag_embed``：按输出形态分档的 Triton 路径。
+
+公共实现先用 ``torch.zeros`` 清零整块输出，再用 ``pointwise_dynamic``
+生成的 kernel 向 ``torch.diagonal`` 得到的非连续 view 写对角线；后者在
+GCU 上会被多维索引分解拖慢，小 shape 还要多付一次 launch。
+
+* 对角轴为输出最后两维（归一化后 dim1=rank-2、dim2=rank-1，任意 offset）：
+  单次 launch 的持久化两阶段 kernel 一次写满输出——每 program 认领连续
+  chunk run，先把整段输出按 int 视图向量化零填充，``tl.debug_barrier``
+  后按对角平坦索引 masked 散写落在本 run 内的对角元。对角元的定位只需
+  每元一次 i32 除法 + i64 仿射地址，没有逐元素 where/select 机构税
+  （diagflat 家族定标：2D tile 逐元素 compare/select 比平坦 fill 慢
+  1.6-1.9 倍）。输出 ≤ ``FUSED_MAX_ELEMENTS`` 走此路径；更大的输出
+  fill 与 scatter 串行段变长，退回 ``torch.zeros`` + 散写双 launch。
+* 其余维度组合：小输出走单 kernel 坐标分解一次写满；大输出保留
+  ``torch.zeros`` 的高效整块清零，再按输入平坦索引散写对角线，
+  避免逐元素分解整个输出（大输出上整数除法代价远超收益）。
+"""
 
 """GCU400-specific ``diag_embed``: two Triton paths tiered by output size.
 
@@ -27,17 +39,17 @@ slowed by multi-dimensional index decomposition on GCU, and small shapes pay an 
   output (integer division costs far more than it saves on large outputs).
 """
 
-import logging
-from contextlib import nullcontext
+import logging  # noqa: E402
+from contextlib import nullcontext  # noqa: E402
 
-import torch
-import triton
-import triton.language as tl
+import torch  # noqa: E402
+import triton  # noqa: E402
+import triton.language as tl  # noqa: E402
 
-from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import libentry
+from flag_gems.runtime import torch_device_fn  # noqa: E402
+from flag_gems.utils import libentry  # noqa: E402
 
-from ..utils.pointwise_dynamic import pointwise_dynamic
+from ..utils.pointwise_dynamic import pointwise_dynamic  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +61,28 @@ NUM_WARPS = 4
 NUM_STAGES = 1
 USE_DEVICE_CONTEXT = 1
 FALLBACK_TO_ORIGINAL = 0
-# Above this output element count, use the zeros + diagonal scatter path:
-# a single kernel's per-element coordinate decomposition is dragged down by integer division on large outputs.
+# When the number of output elements exceeds this threshold, take the zeros + diagonal scatter path:
+# Per-element coordinate decomposition in a single kernel gets bogged down by integer division on large outputs.
 SMALL_OUTPUT_LIMIT = 2097152
 # Whether the large-output path uses a hand-written scatter kernel instead of pointwise_dynamic codegen.
 LARGE_USE_SCATTER = 1
 SCATTER_BLOCK_SIZE = 8192
 SCATTER_NUM_WARPS = 4
-# The scatter kernel uses int64 addresses and can cover outputs beyond 2^30 elements; the cap is
-# kept as protection for extreme sizes and is not triggered by normal cases.
+# The scatter kernel uses int64 addresses and can cover outputs with more than 2^30 elements; keep the upper limit
+# as a safeguard for extreme scales; normal cases will not hit it.
 SCATTER_INDEX_LIMIT = 1 << 40
+# Persistent fused path (last two dimensions are the diagonal axes): number of zero-filled tile bytes per program
+# and the program count (diagflat tuning: 24 persistent programs beat 48 and non-multiples of 24).
+FUSED_TILE_BYTES = 131072
+FUSED_PROGS = 24
+FUSED_SPAN_CAP = 4096
+# Output element cap for the fused path: for larger outputs the fill+scatter serial section gets longer,
+# so the two-launch zeros+scatter is faster instead (measured and tuned at (1024,1024)).
+FUSED_MAX_ELEMENTS = 64 * 1024 * 1024
 # --- TUNING PARAMS END ---
 
-# The kernel decomposes coordinates with a fixed 4-D expansion; when actual rank < 4 the extra dimensions are filled
-# with size=1.
+# The kernel unrolls coordinate decomposition for a fixed 4 dimensions; when the actual rank is less than 4, extra
+# dimensions are filled with size=1.
 _MAX_RANK = 4
 
 
@@ -187,8 +207,143 @@ def _diag_embed_scatter_kernel(
         tl.store(y_ptr + output_index, value, mask=valid)
 
 
+@libentry()
+@triton.jit(
+    do_not_specialize=["count", "m", "m2", "n", "base_term", "ndiag", "chunks", "cpb"]
+)
+def _diag_embed_fused_kernel(
+    fill_ptr,
+    out_ptr,
+    src_ptr,
+    count,
+    m,
+    m2,
+    n,
+    base_term,
+    ndiag,
+    chunks,
+    cpb,
+    RATIO: tl.constexpr,
+    BLOCK: tl.constexpr,
+    SPAN: tl.constexpr,
+):
+    """持久化两阶段：向量化零填充整段 run，一次 barrier 后写本 run 的对角元。
+
+    输出按 ``RATIO`` 个元素一道的 int 视图零填充（fill_ptr），对角元按
+    原生 dtype 散写（out_ptr）。program ``pid`` 认领连续 chunk run
+    ``[pid * cpb, min(pid * cpb + cpb, chunks))``，run 之间地址不相交，
+    因此零与对角值只在本 program 内竞争：``tl.debug_barrier`` 保证本 run
+    的零先于对角值落盘。
+
+    对角元 ``i``（x 平坦索引，``i = outer * n + rr``）的输出地址为
+    ``outer * m2 + rr * (m + 1) + base_term``，其中
+    ``base_term = max(-offset, 0) * (m + 1) + offset`` 把 offset 的两种
+    符号统一成常数项。地址随 ``i`` 单调不减，run 首尾用一次标量除法
+    求出 ``[first, last)`` 索引窗，窗内逐 SPAN 步进；越窗边界（跨 outer
+    段）由 ``addr < hi`` 掩码过滤，两端相邻 run 重叠写的对角元取值恒等，
+    重复写入无害。
+    """
+    pid = tl.program_id(0)
+    start = pid * cpb
+    end = tl.minimum(start + cpb, chunks)
+    zero = tl.zeros([BLOCK], dtype=fill_ptr.dtype.element_ty)
+    for chunk in range(start, end):
+        base = chunk * BLOCK
+        offsets = base + tl.arange(0, BLOCK)
+        if base + BLOCK <= count:
+            tl.store(fill_ptr + offsets, zero)
+        else:
+            tl.store(fill_ptr + offsets, zero, mask=offsets < count)
+    tl.debug_barrier()
+    if ndiag > 0:
+        lo = start.to(tl.int64) * BLOCK * RATIO
+        hi = end.to(tl.int64) * BLOCK * RATIO
+        first = ((lo // m2) * n).to(tl.int32)
+        last = tl.minimum(ndiag, ((hi + m2 - 1) // m2) * n).to(tl.int32)
+        if last > first:
+            for head in range(first, last, SPAN):
+                idx = head + tl.arange(0, SPAN)
+                outer = idx // n
+                diag = idx - outer * n
+                addr = outer.to(tl.int64) * m2 + diag.to(tl.int64) * (m + 1) + base_term
+                valid = (idx < last) & (addr < hi)
+                value = tl.load(
+                    src_ptr + idx,
+                    mask=valid,
+                    other=tl.zeros([SPAN], dtype=src_ptr.dtype.element_ty),
+                )
+                tl.store(out_ptr + addr, value, mask=valid)
+
+
+_FILL_VIEWS = {
+    1: torch.uint8,
+    2: torch.int16,
+    4: torch.int32,
+    8: torch.int64,
+}
+
+
+def _fused_fill_ratio(itemsize, last_dim):
+    """零填充视图的加宽倍数：bool 尽量按 4 字节一道写入，其余按原生宽度。
+
+    torch.zeros 的 bool 填充带宽只有宽道填充的一半左右（1GiB 实测 438µs
+    vs 348µs），Triton 里把 4 个 bool 打包成 int32 一道写可贴满写带宽；
+    2/4 字节 dtype 原生道宽已能贴满地板，无需加宽。视图要求最后一维可
+    被倍数整除，不满足时逐级降档。
+    """
+    if itemsize != 1:
+        return 1
+    for ratio in (4, 2, 1):
+        if last_dim % ratio == 0:
+            return ratio
+    return 1
+
+
+def _diag_embed_fused(x, y_shape, m, n, offset):
+    """对角轴为输出最后两维的连续场景：单 launch 持久化写满输出。"""
+    if not x.is_contiguous():
+        x = x.contiguous()
+    y = torch.empty(y_shape, dtype=x.dtype, device=x.device)
+    y_count = y.numel()
+    ratio = _fused_fill_ratio(y.element_size(), m)
+    view_dtype = _FILL_VIEWS[y.element_size() * ratio]
+    view_count = y_count // ratio
+    block = min(
+        max(16, FUSED_TILE_BYTES // (y.element_size() * ratio)),
+        triton.next_power_of_2(max(16, view_count // FUSED_PROGS)),
+    )
+    chunks = triton.cdiv(view_count, block)
+    nprog = min(FUSED_PROGS, chunks)
+    cpb = triton.cdiv(chunks, nprog)
+    diag_in_run = (cpb * block * ratio) // (m + 1) + 2
+    span = min(FUSED_SPAN_CAP, max(16, triton.next_power_of_2(diag_in_run)))
+    base_term = max(-offset, 0) * (m + 1) + offset
+    device_context = (
+        torch_device_fn.device(x.device) if USE_DEVICE_CONTEXT else nullcontext()
+    )
+    with device_context:
+        _diag_embed_fused_kernel[(nprog,)](
+            y.view(view_dtype),
+            y,
+            x,
+            view_count,
+            m,
+            m * m,
+            n,
+            base_term,
+            x.numel(),
+            chunks,
+            cpb,
+            RATIO=ratio,
+            BLOCK=block,
+            SPAN=span,
+            num_warps=NUM_WARPS,
+        )
+    return y
+
+
 def _diag_embed_original(x, offset, dim1, dim2, y_shape):
-    """Original zeros + diagonal-view path, used when the flat-index limit is exceeded or for forced comparison."""
+    """原始 zeros + diagonal-view 路径，用于超出平坦索引上限或强制对照。"""
     y = torch.zeros(y_shape, dtype=x.dtype, device=x.device)
     diagonal_view = torch.diagonal(y, offset, dim1, dim2)
     _diagonal_copy_func.instantiate(x.ndim)(x, out0=diagonal_view)
@@ -271,13 +426,23 @@ def diag_embed(x, offset=0, dim1=-2, dim2=-1):
     for dimension in y_shape:
         total_elements *= dimension
 
-    # y is stored in contiguous layout; per-dimension strides come from suffix products of shape.
+    if FALLBACK_TO_ORIGINAL or rank > _MAX_RANK:
+        return _diag_embed_original(x, offset, dim1, dim2, y_shape)
+    # When the diagonal axes are exactly the last two output dimensions (any offset), use a single-launch persistent
+    # kernel
+    # to fill the output in one go: zero-fill + scatter of this run's diagonal elements, with no per-element
+    # where/select
+    # fixed overhead, and no second launch for zeros.
+    if dim1 == rank - 2 and dim2 == rank - 1 and total_elements <= FUSED_MAX_ELEMENTS:
+        if x.numel() == 0:
+            return torch.zeros(y_shape, dtype=x.dtype, device=x.device)
+        return _diag_embed_fused(x, y_shape, last_dim, diagonal_length, offset)
+
+    # y is stored in a contiguous layout, and each dimension's stride is derived from the suffix product of the shape.
     y_strides = [1] * rank
     for axis in range(rank - 2, -1, -1):
         y_strides[axis] = y_strides[axis + 1] * y_shape[axis + 1]
 
-    if FALLBACK_TO_ORIGINAL or rank > _MAX_RANK:
-        return _diag_embed_original(x, offset, dim1, dim2, y_shape)
     if total_elements > SMALL_OUTPUT_LIMIT:
         if total_elements > SCATTER_INDEX_LIMIT:
             return _diag_embed_original(x, offset, dim1, dim2, y_shape)

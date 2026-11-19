@@ -261,10 +261,10 @@ def _launch_fused_kernel(
     out4: torch.Tensor | None,
     has_bias: bool,
 ):
-    """Single-launch fused kernel, shared by the non-out and out overloads."""
+    """单次 launch 的融合 kernel，non-out 与 out 两个重载共用。"""
     batch_size, hidden_size = grad_hy.shape
-    # With has_bias=False the bias segment is eliminated at compile time; pointers still need to be dereferenceable, use
-    # out2 as a placeholder.
+    # When has_bias=False, the bias section is eliminated at compile time; the pointer still needs to be
+    # dereferenceable, so out2 is used as a placeholder.
     bias_ptr = out2 if not has_bias else out3
     bias_stride = 1 if not has_bias else out3.stride(0)
     hidden_bias_ptr = out2 if not has_bias else out4
@@ -318,7 +318,7 @@ def _thnn_fused_gru_cell_backward_out(
     out4: torch.Tensor,
 ):
     """out overload of GRU cell backward, signature matches the common implementation."""
-    logger.debug("GEMS_ENFLAME_GCU400 _THNN_FUSED_GRU_CELL_BACKWARD_OUT")
+    logger.debug("GEMS_ENFLAME _THNN_FUSED_GRU_CELL_BACKWARD_OUT")
     if BASELINE_MODE == 1 or not FUSED_SINGLE_LAUNCH:
         return _public_out(
             grad_hy,
@@ -349,7 +349,24 @@ def _thnn_fused_gru_cell_backward_out(
     if batch_size * hidden_size == 0:
         return out0, out1, out2, out3, out4
 
-    _launch_fused_kernel(
-        grad_hy, workspace, out0, out1, out2, out3, out4, has_bias=True
+    # On GCU400 a fused kernel that stores directly with arbitrary strides of out
+    # misses the last column of every gate block for non-contiguous out (transposed
+    # views, [::2] views) -- measured on v4.0 the missed slots keep the residual
+    # torch.empty values. Non-contiguous out is therefore written into a contiguous
+    # temporary and copied back with copy_(), keeping the identity of out;
+    # contiguous out still takes the zero-copy direct-store path.
+    out_tensors = (out0, out1, out2, out3, out4)
+    if all(tensor.is_contiguous() for tensor in out_tensors):
+        _launch_fused_kernel(
+            grad_hy, workspace, out0, out1, out2, out3, out4, has_bias=True
+        )
+        return out_tensors
+
+    staging = tuple(
+        torch.empty_like(tensor, memory_format=torch.contiguous_format)
+        for tensor in out_tensors
     )
-    return out0, out1, out2, out3, out4
+    _launch_fused_kernel(grad_hy, workspace, *staging, has_bias=True)
+    for destination, source in zip(out_tensors, staging):
+        destination.copy_(source)
+    return out_tensors

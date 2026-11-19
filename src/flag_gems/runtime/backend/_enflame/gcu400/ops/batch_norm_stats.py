@@ -19,144 +19,178 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems import runtime
+from flag_gems import runtime  # noqa: F401
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 
+# GCU400 has 48 SPC per wave; a larger grid serializes in waves (see
+# gcu400/ops/sum.py for the same fixed-grid + in-kernel stride precedent).
+MAX_GRID = 48
+# Per-program on-chip budget: x tile (fp32 after cast) + two fp32 accumulators.
+DSM_BYTES = 448 * 1024
+
 
 @libentry()
 @triton.jit
-def batch_norm_stats_kernel_multi_channel(
+def batch_norm_stats_kernel_flat(
+    input_pointer,
+    mean_pointer,
+    invstd_pointer,
+    batch_dim,
+    channel_dim,
+    spatial_dim: tl.constexpr,
+    flat_dim,
+    eps,
+    count,
+    input_batch_stride,
+    BLOCK_B: tl.constexpr,
+    BLOCK_F: tl.constexpr,
+    CHANNELS_PER_TASK: tl.constexpr,
+    NUM_STAGES: tl.constexpr,
+    DEFERRED_TREES: tl.constexpr,
+):
+    """Column-block kernel over the contiguous (channel, spatial) flat dim.
+
+    Each task reduces a BLOCK_F-wide contiguous column block of the
+    row-major (batch, channel * spatial) view, i.e. memory-coalesced loads
+    of BLOCK_F consecutive elements per batch row. Tasks are strided over
+    the fixed 48-program grid, keeping the device in a single wave even
+    for very large channel counts (the generic one-channel-per-program
+    grid serializes in C / 48 waves).
+
+    DEFERRED_TREES=1 keeps two [BLOCK_B, BLOCK_F] fp32 accumulators and
+    reduces once in the epilogue (fewest per-element ops); 0 reduces each
+    tile immediately (smaller accumulator footprint for fp32 tiles).
+    """
+    pid = tl.program_id(0)
+    num_tasks = tl.cdiv(flat_dim, BLOCK_F)
+    flat_offsets = tl.arange(0, BLOCK_F)
+    for task in tl.range(pid, num_tasks, tl.num_programs(0)):
+        flat_base = task * BLOCK_F
+        flat_mask = flat_base + flat_offsets < flat_dim
+        if DEFERRED_TREES == 1:
+            sum_2d = tl.zeros([BLOCK_B, BLOCK_F], dtype=tl.float32)
+            sumsq_2d = tl.zeros([BLOCK_B, BLOCK_F], dtype=tl.float32)
+        else:
+            sum_1d = tl.zeros([BLOCK_F], dtype=tl.float32)
+            sumsq_1d = tl.zeros([BLOCK_F], dtype=tl.float32)
+        for batch_start in tl.range(0, batch_dim, BLOCK_B, num_stages=NUM_STAGES):
+            batch_offsets = batch_start + tl.arange(0, BLOCK_B)
+            pointers = (
+                input_pointer
+                + batch_offsets[:, None] * input_batch_stride
+                + (flat_base + flat_offsets)[None, :]
+            )
+            mask = (batch_offsets[:, None] < batch_dim) & flat_mask[None, :]
+            x = tl.load(pointers, mask=mask, other=0.0).to(tl.float32)
+            if DEFERRED_TREES == 1:
+                sum_2d += x
+                sumsq_2d += x * x
+            else:
+                sum_1d += tl.sum(x, axis=0)
+                sumsq_1d += tl.sum(x * x, axis=0)
+        if DEFERRED_TREES == 1:
+            sum_1d = tl.sum(sum_2d, axis=0)
+            sumsq_1d = tl.sum(sumsq_2d, axis=0)
+        channel_sum = tl.sum(sum_1d.reshape(CHANNELS_PER_TASK, spatial_dim), axis=1)
+        channel_sumsq = tl.sum(sumsq_1d.reshape(CHANNELS_PER_TASK, spatial_dim), axis=1)
+        mean = channel_sum / count
+        var = channel_sumsq / count - mean * mean
+        invstd = 1.0 / tl.sqrt(var + eps)
+        channel_base = flat_base // spatial_dim
+        channel_offsets = channel_base + tl.arange(0, CHANNELS_PER_TASK)
+        channel_mask = channel_offsets < channel_dim
+        tl.store(mean_pointer + channel_offsets, mean, mask=channel_mask)
+        tl.store(invstd_pointer + channel_offsets, invstd, mask=channel_mask)
+
+
+@libentry()
+@triton.jit
+def batch_norm_stats_kernel_per_channel(
     input_pointer,
     mean_pointer,
     invstd_pointer,
     batch_dim,
     channel_dim,
     spatial_dim,
-    input_batch_stride,
-    input_feat_stride,
-    input_spatial_stride,
     eps,
+    count,
+    input_batch_stride,
+    input_channel_stride,
     BLOCK_B: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    CHANNELS_PER_PROG: tl.constexpr,
-):
-    """Kernel optimized for large-C small-spatial shapes.
-
-    Each program handles CHANNELS_PER_PROG channels sequentially.
-    Uses a 2D tile [BLOCK_B, BLOCK_S] over (batch, spatial) for each channel.
-    """
-    pid = tl.program_id(axis=0)
-    feat_start = pid * CHANNELS_PER_PROG
-
-    count = batch_dim * spatial_dim
-    fcount = count.to(tl.float32)
-
-    spatial_offsets = tl.arange(0, BLOCK_S)
-    spatial_mask = spatial_offsets < spatial_dim
-
-    m_num_steps = tl.cdiv(batch_dim, BLOCK_B)
-
-    for _c in tl.static_range(CHANNELS_PER_PROG):
-        feat_idx = feat_start + _c
-        if feat_idx < channel_dim:
-            _sum = tl.zeros([BLOCK_B, BLOCK_S], dtype=tl.float32)
-            _sum_sq = tl.zeros([BLOCK_B, BLOCK_S], dtype=tl.float32)
-
-            base_ptr = input_pointer + feat_idx * input_feat_stride
-
-            for m_step in range(0, m_num_steps):
-                batch_offset = m_step * BLOCK_B + tl.arange(0, BLOCK_B)
-                batch_mask = batch_offset < batch_dim
-
-                mask = batch_mask[:, None] & spatial_mask[None, :]
-
-                curr_ptr = (
-                    base_ptr
-                    + input_batch_stride * batch_offset[:, None]
-                    + input_spatial_stride * spatial_offsets[None, :]
-                )
-
-                x = tl.load(curr_ptr, mask=mask, other=0.0).to(tl.float32)
-                _sum += tl.where(mask, x, 0.0)
-                _sum_sq += tl.where(mask, x * x, 0.0)
-
-            total_sum = tl.sum(_sum)
-            total_sum_sq = tl.sum(_sum_sq)
-
-            mean = total_sum / fcount
-            var = total_sum_sq / fcount - mean * mean
-            invstd = 1.0 / tl.sqrt(var + eps)
-
-            tl.store(mean_pointer + feat_idx, mean)
-            tl.store(invstd_pointer + feat_idx, invstd)
-
-
-@libentry()
-@triton.autotune(
-    configs=runtime.get_tuned_config("batch_norm"),
-    key=["batch_dim", "spatial_dim"],
-)
-@triton.heuristics(runtime.get_heuristic_config("batch_norm"))
-@triton.jit
-def batch_norm_stats_kernel(
-    input_pointer,
-    mean_pointer,
-    invstd_pointer,
-    batch_dim,
-    spatial_dim,
-    input_batch_stride,
-    input_feat_stride,
-    input_spatial_stride,
-    eps,
-    BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    NUM_STAGES: tl.constexpr,
 ):
-    # Each program handles one channel
-    feat_pid = tl.program_id(axis=0)
+    """One channel per task, full-width spatial tiles, strided over 48 programs.
 
-    # Accumulate sum and sum_sq using tiled reduction over batch and spatial dims
-    _sum = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-    _sum_sq = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+    Used when the spatial dim is not a power of two (or exceeds the flat
+    arm's block cap), where the memory-coalesced column-block kernel cannot
+    align task boundaries to channel boundaries.
+    """
+    pid = tl.program_id(0)
+    spatial_offsets = tl.arange(0, BLOCK_N)
+    for channel in tl.range(pid, channel_dim, tl.num_programs(0)):
+        channel_base = input_pointer + channel * input_channel_stride
+        sum_2d = tl.zeros([BLOCK_B, BLOCK_N], dtype=tl.float32)
+        sumsq_2d = tl.zeros([BLOCK_B, BLOCK_N], dtype=tl.float32)
+        for batch_start in tl.range(0, batch_dim, BLOCK_B, num_stages=NUM_STAGES):
+            batch_offsets = batch_start + tl.arange(0, BLOCK_B)
+            batch_mask = batch_offsets < batch_dim
+            for spatial_start in tl.range(0, spatial_dim, BLOCK_N):
+                spatial_vec = spatial_start + spatial_offsets
+                pointers = (
+                    channel_base
+                    + batch_offsets[:, None] * input_batch_stride
+                    + spatial_vec[None, :]
+                )
+                mask = batch_mask[:, None] & (spatial_vec < spatial_dim)[None, :]
+                x = tl.load(pointers, mask=mask, other=0.0).to(tl.float32)
+                sum_2d += x
+                sumsq_2d += x * x
+        total_sum = tl.sum(sum_2d)
+        total_sumsq = tl.sum(sumsq_2d)
+        mean = total_sum / count
+        var = total_sumsq / count - mean * mean
+        tl.store(mean_pointer + channel, mean)
+        tl.store(invstd_pointer + channel, 1.0 / tl.sqrt(var + eps))
 
-    m_num_steps = tl.cdiv(batch_dim, BLOCK_M)
-    n_num_steps = tl.cdiv(spatial_dim, BLOCK_N)
 
-    for m_step in range(0, m_num_steps):
-        batch_offset = m_step * BLOCK_M + tl.arange(0, BLOCK_M)
-        batch_mask = batch_offset < batch_dim
+def _flat_launch_config(batch_dim, channel_dim, spatial_dim, flat_dim, element_size):
+    """Probe-tuned (GCU400/L600, kernel-mode do_bench) launch geometry.
 
-        for n_step in range(0, n_num_steps):
-            spatial_offset = n_step * BLOCK_N + tl.arange(0, BLOCK_N)
-            spatial_mask = spatial_offset < spatial_dim
-
-            mask = batch_mask[:, None] & spatial_mask[None, :]
-
-            curr_input_pointer = (
-                input_pointer
-                + input_feat_stride * feat_pid
-                + input_batch_stride * batch_offset[:, None]
-                + input_spatial_stride * spatial_offset[None, :]
-            )
-
-            x = tl.load(curr_input_pointer, mask=mask, other=0.0).to(tl.float32)
-            _sum += tl.where(mask, x, 0.0)
-            _sum_sq += tl.where(mask, x * x, 0.0)
-
-    # Reduce across the block
-    total_sum = tl.sum(_sum)
-    total_sum_sq = tl.sum(_sum_sq)
-
-    count = (batch_dim * spatial_dim).to(tl.float32)
-    mean = total_sum / count
-    var = total_sum_sq / count - mean * mean
-    invstd = 1.0 / tl.sqrt(var + eps)
-
-    # Store results
-    tl.store(mean_pointer + feat_pid, mean)
-    tl.store(invstd_pointer + feat_pid, invstd)
+    - spatial == 1: target ~32 column tasks; deferred trees, num_warps 2.
+    - 16-bit dtypes: deferred trees inside a 64KB element budget;
+      num_warps 1 for short batch runs, 2 for long ones.
+    - fp32: immediate per-tile trees (tiny [BLOCK_F] accumulators) inside a
+      128KB element budget - the fp32 cast tile needs no extra raw copy, so
+      the wider tile wins; num_warps 1 / 4 by batch length.
+    """
+    if spatial_dim == 1:
+        block_f = max(32, triton.next_power_of_2(max(1, flat_dim // 32)))
+        block_b = min(16384 // block_f, triton.next_power_of_2(batch_dim))
+        return block_b, block_f, 2, 2, 1
+    channels_per_block_cap = 8192 if element_size == 2 else 2048
+    block_f = max(
+        spatial_dim,
+        min(
+            triton.next_power_of_2(max(1, flat_dim // 128)),
+            channels_per_block_cap,
+        ),
+    )
+    if block_f >= 16384:
+        # A single 16K-element block row per task: one [1, BLOCK_F] tile per
+        # step needs the widest warp allocation (probe: nw4 -8.8%/-2.2%).
+        return 1, block_f, 4, 1, 1
+    budget = 16384 if element_size == 2 else 32768
+    block_b = min(max(1, budget // block_f), triton.next_power_of_2(batch_dim))
+    deferred = 1 if element_size == 2 else 0
+    if batch_dim <= 128:
+        num_warps = 1
+    else:
+        num_warps = 2 if element_size == 2 else 4
+    return block_b, block_f, num_warps, 1, deferred
 
 
 def batch_norm_stats(input, eps):
@@ -169,7 +203,7 @@ def batch_norm_stats(input, eps):
     Returns:
         Tuple of (mean, invstd), each of shape (C,)
     """
-    logger.debug("GEMS_ENFLAME_GCU400 BATCH_NORM_STATS")
+    logger.debug("GEMS_ENFLAME BATCH_NORM_STATS")
 
     assert input.ndim >= 2, "Input must have at least 2 dimensions (N, C, ...)"
 
@@ -185,110 +219,86 @@ def batch_norm_stats(input, eps):
         input_3d = input.contiguous()
 
     spatial = input_3d.shape[2]
+    flat_dim = C * spatial
 
     # Output tensors
     mean = torch.empty(C, dtype=torch.float32, device=input.device)
     invstd = torch.empty(C, dtype=torch.float32, device=input.device)
-
-    count = N * spatial
+    # Element count per channel, precomputed on the host: a kernel-side
+    # (batch_dim * spatial_dim).to(tl.float32) breaks when triton
+    # specializes batch_dim == 1 into a python int.
+    count = float(N * spatial)
 
     with torch_device_fn.device(input.device):
-        # Use multi-channel kernel when C is large, per-channel work is small,
-        # and spatial > 1 to ensure good memory locality within each tile row.
-        if C >= 256 and count <= 4096 and spatial >= 2:
-            # Determine channels per program to balance grid size
-            if C >= 2048:
-                channels_per_prog = 8
-            elif C >= 1024:
-                channels_per_prog = 4
-            else:
-                channels_per_prog = 2
-
-            # Block sizes for the 2D (batch, spatial) tile
-            block_b = min(2048, triton.next_power_of_2(N))
-            block_s = triton.next_power_of_2(spatial)
-            # Cap total tile elements
-            max_tile = 2**14
-            block_s = min(block_s, max(1, max_tile // block_b))
-
-            num_warps = 4
-            tile_elems = block_b * block_s
-            if tile_elems >= 4096:
-                num_warps = 8
-            elif tile_elems <= 512:
-                num_warps = 2
-
-            grid = (triton.cdiv(C, channels_per_prog),)
-
-            batch_norm_stats_kernel_multi_channel[grid](
+        # The column-block kernel needs task boundaries aligned to channel
+        # boundaries, which requires a power-of-two spatial dim no larger
+        # than the block cap, and a batch dim > 1 (probe: single-batch
+        # micro shapes prefer the per-channel structure); other shapes go
+        # through the per-channel arm.
+        spatial_is_blockable = (
+            (spatial & (spatial - 1)) == 0 and spatial <= 16384 and N > 1
+        )
+        if spatial_is_blockable:
+            block_b, block_f, num_warps, num_stages, deferred = _flat_launch_config(
+                N, C, spatial, flat_dim, input.element_size()
+            )
+            channels_per_task = block_f // spatial
+            # On-chip budget: fp32 x tile plus (deferred) fp32 accumulators.
+            assert (
+                block_b * block_f * 4 * (3 if deferred else 1) <= DSM_BYTES
+            ), "flat kernel tile exceeds the DSM budget"
+            grid = (min(MAX_GRID, triton.cdiv(flat_dim, block_f)),)
+            batch_norm_stats_kernel_flat[grid](
                 input_3d,
                 mean,
                 invstd,
                 N,
                 C,
                 spatial,
-                input_3d.stride(0),
-                input_3d.stride(1),
-                input_3d.stride(2),
+                flat_dim,
                 eps,
+                count,
+                input_3d.stride(0),
                 BLOCK_B=block_b,
-                BLOCK_S=block_s,
-                CHANNELS_PER_PROG=channels_per_prog,
+                BLOCK_F=block_f,
+                CHANNELS_PER_TASK=channels_per_task,
+                NUM_STAGES=num_stages,
+                DEFERRED_TREES=deferred,
                 num_warps=num_warps,
             )
         else:
-            # Standard path: one channel per program with autotune
-            batch_norm_stats_kernel[(C,)](
+            # Probe-tuned per-channel geometry: long non-power-of-two spatial
+            # dims prefer 4096-wide tiles, short ones 1024-wide with full
+            # batch rows; wide warps only pay off for long spatial loops on
+            # channel counts that underfill the 48-program wave.
+            block_n = min(
+                triton.next_power_of_2(spatial), 4096 if spatial >= 8192 else 1024
+            )
+            block_b = min(max(16384 // block_n, 1), triton.next_power_of_2(N))
+            assert (
+                block_b * block_n * 4 * 3 <= DSM_BYTES
+            ), "per-channel kernel tile exceeds the DSM budget"
+            num_warps = 4 if (C < 24 and spatial >= 8192) else 1
+            grid = (min(MAX_GRID, C),)
+            batch_norm_stats_kernel_per_channel[grid](
                 input_3d,
                 mean,
                 invstd,
                 N,
+                C,
                 spatial,
+                eps,
+                count,
                 input_3d.stride(0),
                 input_3d.stride(1),
-                input_3d.stride(2),
-                eps,
+                BLOCK_B=block_b,
+                BLOCK_N=block_n,
+                NUM_STAGES=1,
+                num_warps=num_warps,
             )
 
     return mean, invstd
 
 
-def _install_aten_kernels():
-    """Route bare aten::batch_norm_stats calls on GCU onto this kernel.
-
-    torch_gcu ships no ``aten::batch_norm_stats`` kernel (no topsaten entry;
-    verified absent from the package and its shared libraries), and upstream
-    aten defines the op for CUDA only, so a bare
-    ``torch.batch_norm_stats(gcu_tensor)`` falls through to torch_gcu's aten
-    CPU fallback and raises ``NotImplementedError`` -- the accuracy suite's
-    reference leg dies before the FlagGems op is even called.  A CPU reference
-    is not an option either: the op has no CPU implementation, which is why
-    ``tests/test_batch_norm_stats.py`` skips itself under ``--ref cpu``.
-    Registering the op on the backend dispatch key here makes those calls land
-    on this kernel, which is exactly what production already sees inside
-    ``flag_gems.use_gems()`` / ``flag_gems.enable()`` (_FULL_CONFIG maps
-    ``batch_norm_stats`` to this function).
-
-    Idempotent: a later ``use_gems()``/``enable()`` cycle re-attempts the same
-    registration through the general registrar and is skipped with a warning.
-    """
-    try:
-        dispatch_key = runtime.device.dispatch_key
-        library = torch.library.Library("aten", "IMPL")
-        try:
-            library.impl("batch_norm_stats", batch_norm_stats, dispatch_key)
-        except RuntimeError as error:
-            logger.warning(
-                "batch_norm_stats: aten registration batch_norm_stats@%s skipped: %s",
-                dispatch_key,
-                error,
-            )
-        return library
-    except Exception as error:
-        logger.warning("batch_norm_stats: aten registration unavailable: %s", error)
-        return None
-
-
 # Module-level handle keeps the Library (and its kernel) alive for the
 # process; the registration itself must never break the flag_gems import.
-_BATCH_NORM_STATS_ATEN_LIBRARY = _install_aten_kernels()

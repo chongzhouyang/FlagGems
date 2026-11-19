@@ -16,10 +16,78 @@ import logging
 
 import torch
 import triton
+import triton.language as tl
+
+from flag_gems.runtime import torch_device_fn
 
 from ..utils.pointwise_dynamic import pointwise_dynamic
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Dense binary fast path (identical shape / dtype / contiguous).
+#
+# Measurements on GCU400 (48 SPs, topsprof/torch-event, bf16/fp32/int8) show a
+# hard ~200 GB/s memory wall: a pure copy kernel hits the same number for every
+# dtype and for 48..384 CTAs. The op is therefore bandwidth bound and the only
+# remaining lever is work balance. The generic pointwise_dynamic path fixes the
+# tile at 65536 elements, so a 4.19M-element tensor yields 64 tiles over 48
+# CTAs and rounds up to two grid-stride iterations (96 slots, 67% effective),
+# which measures ~9% slower than the bandwidth ceiling. A 16KB-per-operand tile
+# keeps the ragged tail at one iteration of at most 48 CTAs, and num_warps=1 is
+# fastest for this pure streaming body (nw2/nw4 are 1-2% slower).
+# ---------------------------------------------------------------------------
+_DENSE_FAST_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+_MAX_GRID_SIZE = 48
+# Per-tile byte budget. The generic path's 65536-element tile rounds up to a
+# duplicated grid-stride wave on a 48-SP device (67% effective at 4.19M
+# elements), which is the real loss. 16KB per operand is where the streaming
+# body plateaus for fp16/bf16 (8192 elements) and for fp32 (4096 elements);
+# 2KB tiles are slower (loop cost stops being amortised) and 128KB+ tiles are
+# slower again on the mid-size shapes.
+_TILE_BYTES = 16384
+# The generic path stays balanced (and cheaper at the launch-latency floor) as
+# long as its 65536-element tile fits in a single wave of 48 CTAs; only beyond
+# that point does it round up to a duplicated grid-stride iteration.
+_GENERIC_TILE_ELEMS = 65536
+_DENSE_FAST_MIN_NUMEL = _MAX_GRID_SIZE * _GENERIC_TILE_ELEMS + 1
+
+
+@triton.jit
+def _sub_dense_kernel(a_ptr, b_ptr, out_ptr, alpha, numel, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    # Round-robin over tiles so that the last, possibly ragged, wave is at most
+    # one tile per CTA instead of a full duplicated iteration.
+    for block_start in range(pid * BLOCK, numel, num_progs * BLOCK):
+        offsets = block_start + tl.arange(0, BLOCK)
+        mask = offsets < numel
+        lhs = tl.load(a_ptr + offsets, mask=mask)
+        rhs = tl.load(b_ptr + offsets, mask=mask)
+        tl.store(out_ptr + offsets, lhs - rhs * alpha, mask=mask)
+
+
+def _is_dense_pair(A, B):
+    return (
+        isinstance(A, torch.Tensor)
+        and isinstance(B, torch.Tensor)
+        and A.dtype == B.dtype
+        and A.dtype in _DENSE_FAST_DTYPES
+        and A.shape == B.shape
+        and A.is_contiguous()
+        and B.is_contiguous()
+        and _DENSE_FAST_MIN_NUMEL <= A.numel() < (1 << 31)
+    )
+
+
+def _launch_dense_sub(A, B, alpha, out):
+    numel = A.numel()
+    block = _TILE_BYTES // A.element_size()
+    num_tiles = triton.cdiv(numel, block)
+    grid = (min(_MAX_GRID_SIZE, num_tiles),)
+    with torch_device_fn.device(A.device.index):
+        _sub_dense_kernel[grid](A, B, out, alpha, numel, BLOCK=block, num_warps=1)
+    return out
 
 
 @pointwise_dynamic(is_tensor=[True, True, False], promotion_methods=[(0, 1, "DEFAULT")])
@@ -78,6 +146,8 @@ def sub(A, B, *, alpha=1):
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
         if A.is_complex() or B.is_complex():
             return _sub_complex(A, B, alpha)
+        if _is_dense_pair(A, B):
+            return _launch_dense_sub(A, B, alpha, torch.empty_like(A))
         return sub_func(A, B, alpha)
     elif isinstance(A, torch.Tensor):
         if A.is_complex() or isinstance(B, complex):
@@ -98,6 +168,8 @@ def sub_(A, B, *, alpha=1):
         if A.is_complex() or B.is_complex():
             A.copy_(_sub_complex(A, B, alpha))
             return A
+        if _is_dense_pair(A, B):
+            return _launch_dense_sub(A, B, alpha, A)
         return sub_func(A, B, alpha, out0=A)
     else:
         if A.is_complex() or isinstance(B, complex):

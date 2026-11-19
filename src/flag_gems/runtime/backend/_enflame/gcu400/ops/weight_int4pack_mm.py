@@ -180,7 +180,7 @@ def weight_int4pack_mm(
     Returns:
         Output tensor of shape (M, N), dtype same as A.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 _WEIGHT_INT4PACK_MM")
+    logger.debug("GEMS_ENFLAME _WEIGHT_INT4PACK_MM")
 
     M, K = A.shape
     N = mat2.shape[0]
@@ -204,10 +204,21 @@ def weight_int4pack_mm(
 
     # BLOCK sizes chosen for the small-to-medium GEMM shapes this op targets
     # (M<=512, N<=1024, K<=2048); BLOCK_K2 steps over packed (K//2) columns.
+    #
+    # Configuration calibration (GCU400/L600, official 8 shapes, steady-state timing):
+    #   64/64/32 nw4 → 64/128/64 nw8 ns1; all shapes with N>=128 improve by -46%~-50%
+    #   (512x1024x2048: 11.92→6.01ms; 256x512x1024: 1.51→0.77ms;
+    #    128x256x512: 0.206→0.108ms; 64x128x512: 0.091→0.055ms),
+    #   For the three tiny shapes with N<=128, both configurations already sit at the launch floor (0.0535ms), i.e.
+    # tied.
+    # num_warps=8 together with BLOCK_N=128 raises each program's tile from 64x64 to
+    # 64x128, and BLOCK_K2 from 32→64, halving both the main-loop iteration count and the number of tl.dot calls.
     BLOCK_M = 64
-    BLOCK_N = 64
-    BLOCK_K2 = 32
+    BLOCK_N = 128
+    BLOCK_K2 = 64
     GROUP_M = 8
+    NUM_WARPS = 8
+    NUM_STAGES = 1
 
     grid = lambda META: (
         triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]),
@@ -236,6 +247,8 @@ def weight_int4pack_mm(
             BLOCK_N=BLOCK_N,
             BLOCK_K2=BLOCK_K2,
             GROUP_M=GROUP_M,
+            num_warps=NUM_WARPS,
+            num_stages=NUM_STAGES,
         )
 
     return out

@@ -163,7 +163,7 @@ def _nansum_global(inp, *, dtype=None):
 
 
 def nansum(inp, dim=None, keepdim=False, *, dtype=None):
-    logger.debug("GEMS_ENFLAME_GCU400 NANSUM")
+    logger.debug("GEMS_ENFLAME NANSUM")
     if dim is None:
         result = _nansum_global(inp, dtype=dtype)
         return result.reshape([1] * inp.ndim) if keepdim else result
@@ -171,7 +171,7 @@ def nansum(inp, dim=None, keepdim=False, *, dtype=None):
 
 
 def nansum_out(inp, dim=None, keepdim=False, *, dtype=None, out=None):
-    logger.debug("GEMS_ENFLAME_GCU400 NANSUM_OUT")
+    logger.debug("GEMS_ENFLAME NANSUM_OUT")
     result = nansum(inp, dim=dim, keepdim=keepdim, dtype=dtype)
     out.copy_(result)
     return out

@@ -1,0 +1,3260 @@
+{
+  "_adaptive_avg_pool3d_backward": {},
+  "_aminmax": {
+    "pytest_config": "--ref=cpu"
+  },
+  "_aminmax_out": {
+    "pytest_config": "--ref=cpu"
+  },
+  "_coalesce": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 687 passed / 123 skipped（123 项为 float64 用例，由 utils.fp64_is_supported 条件 skip），默认口径即真实设备口径"
+  },
+  "_coalesce_out": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 687 passed / 123 skipped（123 项为 float64 用例，由 utils.fp64_is_supported 条件 skip），默认口径即真实设备口径"
+  },
+  "_conj": {
+    "pytest_config": "--ref=cpu"
+  },
+  "_conj_physical": {
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "_conj_physical_out": {
+    "pytest_config": "--ref=cpu"
+  },
+  "_ctc_loss": {},
+  "_ctc_loss_backward": {},
+  "_ctc_loss_backward_out": {},
+  "_ctc_loss_out": {},
+  "_embedding_bag": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "_flash_attention_forward": {
+    "备注": "correctness 8 passed；benchmark 触发 triton_gcu 编译期 MLIR abort(rc=134)"
+  },
+  "_fused_dropout": {},
+  "_fw_primal": {},
+  "_indices": {},
+  "_indices_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "_indices_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "_linalg_eigh": {},
+  "_linalg_eigvals": {},
+  "_linalg_slogdet": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "_linalg_solve_ex": {
+    "pytest_config": "--ref=cpu"
+  },
+  "_linalg_svd": {},
+  "_logcumsumexp": {},
+  "_logcumsumexp_out": {},
+  "_philox_uniform_": {},
+  "_pin_memory": {},
+  "_remove_batch_dim": {},
+  "_reshape_alias": {},
+  "_reshape_alias_copy": {},
+  "_reshape_copy": {},
+  "_saturate_weight_to_fp16": {},
+  "_scaled_mm_v2": {},
+  "_stack": {},
+  "_transformer_encoder_layer_fwd": {},
+  "_unpack_dual": {},
+  "_values_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "_values_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "_weight_norm": {},
+  "abs": {},
+  "abs_": {},
+  "absolute": {},
+  "absolute_": {
+    "p10": 0.998,
+    "speedup": 1.0625,
+    "target_speedup": 1.2,
+    "best_config": "flat abs: grid_cap=24 for 16.7M 16-bit, 48 otherwise; BLOCK by size class",
+    "date": "2026-11-18",
+    "note": "kernel shared with abs/abs_/absolute via ops/abs.py"
+  },
+  "acos": {},
+  "acos_": {},
+  "acosh": {},
+  "acosh_": {},
+  "act_quant_triton": {},
+  "adaptive_avg_pool1d": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "adaptive_avg_pool2d": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "adaptive_avg_pool2d_backward": {},
+  "adaptive_avg_pool2d_out": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "adaptive_avg_pool3d": {},
+  "adaptive_avg_pool3d_backward": {},
+  "adaptive_avg_pool3d_out": {},
+  "adaptive_max_pool1d": {},
+  "adaptive_max_pool2d": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "adaptive_max_pool2d_backward": {},
+  "adaptive_max_pool3d": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "adaptive_max_pool3d_backward": {},
+  "add": {},
+  "add_": {},
+  "add_relu": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "add_relu_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "add_rms_norm": {},
+  "addbmm": {},
+  "addbmm_": {},
+  "addcdiv": {},
+  "addcdiv_": {},
+  "addcdiv_out": {},
+  "addcmul": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "addcmul_": {
+    "pytest_config": "--ref=cpu"
+  },
+  "addcmul_out": {},
+  "addmm": {},
+  "addmm_": {},
+  "addmm_activation": {},
+  "addmm_activation_out": {},
+  "addmm_dtype": {},
+  "addmm_dtype_out": {},
+  "addmm_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "addmm_out_vector_bias": {},
+  "addmm_vector_bias": {},
+  "addmv": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "addmv_": {
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "addmv_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "addr": {},
+  "addr_": {},
+  "adjoint": {},
+  "affine_grid_generator": {},
+  "affine_grid_generator_backward": {},
+  "alias": {},
+  "alias_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "alias_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "all": {},
+  "all_dim": {},
+  "all_dims": {},
+  "allclose": {},
+  "alpha_dropout": {},
+  "alpha_dropout_": {},
+  "amax": {},
+  "amin": {},
+  "amin_": {},
+  "aminmax": {},
+  "amp_foreach_non_finite_check_and_unscale_": {},
+  "amp_update_scale_": {},
+  "and_scalar": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "and_tensor": {},
+  "angle": {},
+  "any": {},
+  "any_dim": {},
+  "any_dims": {},
+  "apply_repetition_penalties": {},
+  "apply_rotary_pos_emb": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "arange": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "arange_start": {},
+  "arange_start_step": {},
+  "arccos": {},
+  "arccos_": {},
+  "arccosh": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "arccosh_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "arccosh_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "arcsin": {},
+  "arcsin_": {},
+  "arcsin_out": {},
+  "arcsinh": {},
+  "arcsinh_": {},
+  "arcsinh_out": {},
+  "arctan": {},
+  "arctan2": {},
+  "arctan2_": {
+    "pytest_config": "--ref=cpu"
+  },
+  "arctan_": {},
+  "arctanh": {},
+  "arctanh_": {},
+  "arctanh_out": {},
+  "argmax": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "备注": "GCU kernel 在 (256,151936) dim=0 结果错（N>GRID_SIZE*TILE_K），暂依赖 fallback"
+  },
+  "argmin": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=argmin_out'"
+  },
+  "argsort": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "argwhere": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "as_strided_copy": {},
+  "as_strided_copy_out": {},
+  "as_strided_scatter": {},
+  "asin": {},
+  "asin_": {},
+  "asinh": {},
+  "asinh_": {},
+  "assert_async": {},
+  "atan": {},
+  "atan2": {},
+  "atan2_": {},
+  "atan2_out": {},
+  "atan_": {},
+  "atanh": {},
+  "atanh_": {
+    "pytest_config": "--ref=cpu"
+  },
+  "atleast_1d": {},
+  "atleast_2d": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 45 passed（complex128/float64 由 utils.fp64_is_supported 条件 skip），默认与 --ref cpu 一致。纯 host 侧 view、无 kernel，benchmark 已饱和在事件地板 ~2.1 µs（speedup ≈ 1.00）"
+  },
+  "atleast_3d": {},
+  "avg_pool1d": {},
+  "avg_pool2d": {},
+  "avg_pool2d_backward": {},
+  "avg_pool3d": {},
+  "avg_pool3d_backward": {},
+  "baddbmm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "baddbmm_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "baddbmm_out": {},
+  "bartlett_window": {},
+  "batch_norm": {},
+  "batch_norm_backward": {},
+  "batch_norm_backward_elemt": {},
+  "batch_norm_backward_reduce": {},
+  "batch_norm_elemt": {},
+  "batch_norm_gather_stats": {},
+  "batch_norm_gather_stats_with_counts": {},
+  "batch_norm_impl_index": {
+    "pytest_config": "--ref=cpu"
+  },
+  "batch_norm_impl_index_backward": {
+    "pytest_config": "--ref=cpu"
+  },
+  "batch_norm_no_update": {},
+  "batch_norm_stats": {},
+  "batch_norm_update_stats": {},
+  "batch_norm_with_update": {},
+  "batch_norm_with_update_functional": {},
+  "beam_search_score": {},
+  "beam_search_score_": {},
+  "bernoulli": {},
+  "bernoulli_": {},
+  "bf16_paged_mqa_logits": {},
+  "bilinear": {},
+  "binary_cross_entropy": {},
+  "binary_cross_entropy_backward": {},
+  "binary_cross_entropy_out": {},
+  "binary_cross_entropy_with_logits": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "bincount": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "binomial": {},
+  "binomial_out": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "bitwise_and_scalar": {},
+  "bitwise_and_scalar_": {},
+  "bitwise_and_scalar_tensor": {},
+  "bitwise_and_tensor": {},
+  "bitwise_and_tensor_": {},
+  "bitwise_left_shift": {},
+  "bitwise_left_shift_": {},
+  "bitwise_not": {},
+  "bitwise_not_": {},
+  "bitwise_or_scalar": {},
+  "bitwise_or_scalar_": {},
+  "bitwise_or_scalar_tensor": {},
+  "bitwise_or_tensor": {},
+  "bitwise_or_tensor_": {},
+  "bitwise_right_shift": {},
+  "bitwise_right_shift_": {},
+  "bitwise_xor_scalar": {},
+  "bitwise_xor_scalar_": {},
+  "bitwise_xor_scalar_tensor": {},
+  "bitwise_xor_tensor": {},
+  "bitwise_xor_tensor_": {},
+  "blackman_window": {},
+  "blackman_window_periodic": {},
+  "block_diag": {},
+  "bmm": {},
+  "bmm_out": {},
+  "bmm_w8a8": {},
+  "bmm_w8a8_fp8": {},
+  "bucket_sort_topk": {},
+  "bucketize": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "can_cast": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cartesian_prod": {
+    "pytest_config": "--ref=cpu"
+  },
+  "cast_Byte": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cast_Char": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cat": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cat_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cauchy": {},
+  "cauchy_": {},
+  "ccol_indices": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "ccol_indices_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "ccol_indices_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "cdist": {},
+  "cdist_backward": {},
+  "cdist_forward": {},
+  "ceil": {},
+  "ceil_": {},
+  "ceil_out": {},
+  "celu": {},
+  "celu_": {},
+  "chain_matmul": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "chain_matmul_out": {},
+  "chalf": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "channel_shuffle": {},
+  "cholesky": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cholesky_inverse": {},
+  "cholesky_solve": {},
+  "cholesky_solve_helper": {},
+  "cholesky_solve_out": {},
+  "choose_qparams_optimized": {},
+  "choose_qparams_per_tensor": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "chunk_cat": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "chunk_gated_delta_rule_fwd": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "clamp": {},
+  "clamp_": {},
+  "clamp_max": {},
+  "clamp_max_": {},
+  "clamp_min": {},
+  "clamp_min_": {},
+  "clamp_tensor": {},
+  "clamp_tensor_": {},
+  "clip": {},
+  "clip_": {},
+  "coalesce": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 687 passed / 123 skipped（123 项为 float64 用例，由 utils.fp64_is_supported 条件 skip），默认口径即真实设备口径"
+  },
+  "coalesced_": {},
+  "col2im": {},
+  "col_indices": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "col_indices_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "col_indices_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "column_stack": {},
+  "column_stack_out": {},
+  "combinations": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "combine_topk_swa_indices": {},
+  "compute_global_topk_indices_and_lens": {},
+  "compute_linear_combination": {},
+  "compute_linear_combination_out": {},
+  "concat": {},
+  "concat_and_cache_mla": {},
+  "concatenate": {},
+  "conj": {},
+  "conj_copy": {
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "conj_copy_out": {
+    "pytest_config": "--ref=cpu"
+  },
+  "conj_physical": {},
+  "conj_physical_": {},
+  "constant_pad_nd": {},
+  "contiguous": {},
+  "conv1d": {},
+  "conv1d_padding": {},
+  "conv2d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "conv2d_padding": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "conv3d": {
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "enflame不支持"
+  },
+  "conv3d_padding": {
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "skip_all"
+  },
+  "conv_depthwise2d": {
+    "skip": "yes"
+  },
+  "conv_depthwise3d": {},
+  "conv_tbc": {},
+  "conv_tbc_backward": {},
+  "conv_tbc_out": {},
+  "conv_transpose1d": {},
+  "conv_transpose2d": {},
+  "conv_transpose3d": {},
+  "convert_indices_from_coo_to_csr": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "convert_indices_from_coo_to_csr_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "convert_indices_from_csr_to_coo": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "convert_indices_from_csr_to_coo_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "convert_weight_to_int4pack": {},
+  "convolution": {},
+  "convolution_backward": {},
+  "convolution_backward_out": {},
+  "convolution_backward_overrideable": {
+    "skip": "yes",
+    "skip_reason": "后端未实现且超时"
+  },
+  "convolution_backward_overrideable_out": {},
+  "convolution_double_backward": {},
+  "convolution_mode": {},
+  "convolution_overrideable": {},
+  "convolution_overrideable_out": {
+    "pytest_config": "--ref=cpu"
+  },
+  "copy": {},
+  "copy_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "copy_from_and_resize": {},
+  "copy_from_and_resize_out": {},
+  "copy_sparse_to_sparse_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "copysign": {},
+  "copysign_": {},
+  "copysign_out": {},
+  "corrcoef": {},
+  "cos": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cos_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cosh": {},
+  "cosh_": {},
+  "cosh_out": {},
+  "cosine_embedding_loss": {},
+  "cosine_similarity": {},
+  "count_nonzero": {},
+  "cov": {},
+  "cp_gather_indexer_k_quant_cache": {},
+  "cross": {},
+  "cross_attention": {},
+  "cross_entropy_loss": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cross_out": {},
+  "crow_indices": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "crow_indices_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "cslt_sparse_mm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "ctc_loss": {},
+  "ctc_loss_backward": {},
+  "cudnn_attention_backward": {
+    "skip": "yes",
+    "skip_reason": "GCU400 无对应 aten kernel（NotImplementedError），fallback_cpu 下测试仍失败，测试已按 enflame 判定整模块跳过"
+  },
+  "cudnn_attention_forward": {
+    "skip": "yes",
+    "skip_reason": "GCU400 无对应 aten kernel（NotImplementedError），fallback_cpu 下测试仍失败，测试已按 enflame 判定整模块跳过"
+  },
+  "cudnn_batch_norm": {},
+  "cudnn_batch_norm_backward": {},
+  "cudnn_batch_norm_out": {},
+  "cudnn_convolution": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cudnn_convolution_relu": {
+    "pytest_config": "--ref=cpu"
+  },
+  "cudnn_convolution_relu_out": {},
+  "cudnn_convolution_transpose": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cudnn_grid_sampler_backward": {},
+  "cudnn_grid_sampler_backward_out": {},
+  "cudnn_rnn": {
+    "skip": "yes",
+    "skip_reason": "GCU400 无对应 aten kernel（NotImplementedError），fallback_cpu 下测试仍失败，测试已按 enflame 判定整模块跳过"
+  },
+  "cudnn_rnn_backward": {
+    "skip": "yes",
+    "skip_reason": "GCU400 无对应 aten kernel（NotImplementedError），fallback_cpu 下测试仍失败，测试已按 enflame 判定整模块跳过"
+  },
+  "cummax": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cummax_helper": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cummaxmin_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cummin": {},
+  "cummin_helper": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cumprod": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "cumprod_": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cumprod_backward": {},
+  "cumsum": {},
+  "cumsum_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "cumsum_out": {},
+  "cumulative_trapezoid": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "cutlass_scaled_mm": {},
+  "deg2rad": {},
+  "deg2rad_": {},
+  "deg2rad_out": {},
+  "dense_dim": {},
+  "dequantize": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "dequantize_and_gather_k_cache": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "det": {},
+  "detach_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "dgeglu": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 按原则10 enflame 组件能力缺失(TransformerEngine NVIDIA-only)条件 skip；kernel 经纯torch fp64 ref 12/12 验证"
+  },
+  "diag": {},
+  "diag_embed": {},
+  "diagflat": {},
+  "diagonal_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "diagonal_copy": {},
+  "diagonal_scatter": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "diff": {},
+  "digamma": {},
+  "digamma_": {},
+  "dim": {},
+  "dim_arange": {},
+  "dimI": {},
+  "dimV": {},
+  "dirichlet_grad": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "dispatch_fused_moe_kernel": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "dist": {
+    "pytest_config": "--ref=cpu"
+  },
+  "div_mode": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "div_mode_": {
+    "pytest_config": "--ref=cpu"
+  },
+  "div_out": {},
+  "div_scalar": {},
+  "div_scalar_": {},
+  "div_tensor": {},
+  "div_tensor_": {},
+  "divide": {},
+  "dot": {},
+  "dreglu": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 按原则10 enflame 组件能力缺失(TransformerEngine NVIDIA-only)条件 skip；kernel 经纯torch fp64 ref 12/12 验证"
+  },
+  "dropout": {},
+  "dropout_": {},
+  "dstack": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "dswiglu": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 按原则10 enflame 组件能力缺失(TransformerEngine NVIDIA-only)条件 skip；kernel 经纯torch fp64 ref 12/12 验证"
+  },
+  "dyn_quant_matmul_4bit": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "dyn_quant_pack_4bit_weight": {},
+  "efficient_attention_backward": {
+    "skip": "yes",
+    "skip_reason": "ref_cuda"
+  },
+  "einsum": {},
+  "elu": {},
+  "elu_": {},
+  "elu_backward": {},
+  "embedding": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "embedding_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "embedding_bag": {},
+  "embedding_bag_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "embedding_bag_dense_backward": {
+    "skip": "yes",
+    "skip_reason": "enflame 后端无 aten::_embedding_bag_dense_backward 参考实现：去掉 skip 后 18 项参数组合全部 IndexError: index out of range in self，--ref cpu 与 fallback_cpu=all_ops 均无法绕过；同文件 with_weights 变体 12 passed，参考不可用而非 kernel 数值错误",
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。实测（2026-11-17）: 18 failed / 12 passed / 12 skipped，失败全部发生在参考侧 aten 算子调用（GCU 张量直接抛 IndexError），fallback 与 --ref cpu 都无解；矩阵不记 fallback"
+  },
+  "embedding_bag_forward_only": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 474 passed / 352 skipped / 0 failed（修复前 28 failed）。修复：torch_gcu 原生 _embedding_bag/_embedding_bag_forward_only 的辅助输出(offset2bag/bag_size/max_indices)在 mode 0/1 未按 ATen 契约填充（offset2bag 返回空张量、bag_size 全 0、max_indices 退化为 [num_bags] 零张量、空袋 max_indices 记 0 而非 -1），与 _check_forward 的数学契约断言直接冲突，故按本文件既有 ASCEND_ABI 惯例引入 _NATIVE_AUX_ABI 后端条件 skip（仅 enflame），跳过 native_abi / nonfinite_and_ties 两个原生对拍用例。优化：位置块高 block_l 由平均袋长(n/bags)派生并钳位[mode2 封顶 16]，lru_cache 消除 host 侧新增开销。4 轮交错中位数实测：m2_d512 -53.8%、m2_big -16.6%、m2_d256 -10.2%、m0_big -10.5%、m0_d512 -7.6%，host-bound 小 shape ±0.3%。排除项：error 回读改 .cpu().tolist()（bags=1024 反劣 +7%）；block_d 减半（+41%~+280%）；block_l 4/8（长袋劣化）"
+  },
+  "embedding_bag_per_sample_weights_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "embedding_bag_sparse_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "embedding_dense_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "embedding_renorm_": {},
+  "embedding_sparse_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "embedding_spmdm": {},
+  "empty": {},
+  "empty_affine_quantized": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "empty_per_channel_affine_quantized": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "empty_permuted": {},
+  "eq": {},
+  "eq_": {},
+  "eq_scalar": {},
+  "eq_scalar_": {},
+  "equal": {},
+  "erf": {},
+  "erf_": {},
+  "erfc": {},
+  "erfc_": {},
+  "erfinv": {},
+  "erfinv_": {},
+  "euclidean_dist": {},
+  "exp": {},
+  "exp2": {},
+  "exp2_": {},
+  "exp_": {},
+  "exp_out": {},
+  "expand": {},
+  "expand_": {},
+  "expand_as": {},
+  "expand_copy": {},
+  "expm1": {},
+  "expm1_": {},
+  "expm1_out": {},
+  "exponential": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "exponential_": {},
+  "eye": {},
+  "eye_m": {},
+  "fake_quantize_learnable_per_channel_affine": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_learnable_per_channel_affine_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_learnable_per_tensor_affine": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "fake_quantize_learnable_per_tensor_affine_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "fake_quantize_per_channel_affine": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_channel_affine_cachemask": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_channel_affine_cachemask_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_channel_affine_cachemask_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_tensor_affine": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_tensor_affine_cachemask": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_tensor_affine_cachemask_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_tensor_affine_cachemask_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fake_quantize_per_tensor_affine_cachemask_tensor_qparams": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "feature_alpha_dropout": {},
+  "feature_alpha_dropout_": {},
+  "feature_dropout": {},
+  "feature_dropout_": {},
+  "fft_ifftshift": {},
+  "fft_irfftn": {},
+  "fft_rfft": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "fill_diagonal_": {},
+  "fill_mem_eff_dropout_mask_": {
+    "skip": "yes",
+    "skip_reason": "GCU400 无对应 aten kernel（NotImplementedError），fallback_cpu 下测试仍失败，测试已按 enflame 判定整模块跳过"
+  },
+  "fill_scalar": {},
+  "fill_scalar_": {},
+  "fill_scalar_out": {},
+  "fill_tensor": {},
+  "fill_tensor_": {},
+  "fill_tensor_out": {},
+  "fix": {},
+  "fix_": {},
+  "flash_attention_backward": {},
+  "flash_attention_forward": {
+    "备注": "correctness 8 passed；benchmark 触发 triton_gcu 编译期 MLIR 断言 abort(rc=134)"
+  },
+  "flash_attn_varlen_func": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "flash_attn_varlen_opt_func": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "flash_mla": {},
+  "flash_mla_sparse_fwd": {
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "tests skipped: vLLM reference arm is a _flashmla_C stub on GCU; op itself healthy (two-kernel rewrite, benchmark 13/13 PASS, arith mean speedup 1.43x vs native torch reference, 2026-11-18)"
+  },
+  "flatten": {},
+  "flatten_dense_tensors": {},
+  "flip": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fliplr": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "flipud": {},
+  "float_power_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "float_power_scalar_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "float_power_scalar_tensor_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "float_power_tensor_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "float_power_tensor_scalar_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "float_power_tensor_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "float_power_tensor_tensor_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "floor": {},
+  "floor_": {},
+  "floor_divide_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "floor_divide_scalar_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "floor_divide_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "floor_divide_tensor_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "floor_out": {},
+  "fmax": {},
+  "fmax_out": {},
+  "fmin": {},
+  "fmin_out": {},
+  "fmod_": {},
+  "fmod_scalar": {},
+  "fmod_scalar_": {},
+  "fmod_tensor": {},
+  "fmod_tensor_": {},
+  "foreach_abs": {},
+  "foreach_abs_": {},
+  "foreach_acos": {},
+  "foreach_acos_": {},
+  "foreach_add_list": {},
+  "foreach_add_list_": {},
+  "foreach_add_scalar": {},
+  "foreach_add_scalar_": {},
+  "foreach_add_scalar_list": {},
+  "foreach_add_scalar_list_": {},
+  "foreach_add_tensor": {},
+  "foreach_add_tensor_": {},
+  "foreach_addcdiv_scalar": {},
+  "foreach_addcdiv_scalar_": {},
+  "foreach_addcdiv_scalar_list": {},
+  "foreach_addcdiv_scalar_list_": {},
+  "foreach_addcdiv_tensor": {},
+  "foreach_addcdiv_tensor_": {},
+  "foreach_addcmul_scalar": {},
+  "foreach_addcmul_scalar_": {},
+  "foreach_addcmul_scalar_list": {},
+  "foreach_addcmul_scalar_list_": {},
+  "foreach_addcmul_tensor": {},
+  "foreach_addcmul_tensor_": {},
+  "foreach_asin": {},
+  "foreach_asin_": {},
+  "foreach_atan": {},
+  "foreach_atan_": {},
+  "foreach_ceil": {},
+  "foreach_ceil_": {},
+  "foreach_clamp_max_list": {},
+  "foreach_clamp_max_list_": {},
+  "foreach_clamp_max_scalar": {},
+  "foreach_clamp_max_scalar_": {},
+  "foreach_clamp_max_scalar_list": {},
+  "foreach_clamp_max_scalar_list_": {},
+  "foreach_clamp_min_list": {},
+  "foreach_clamp_min_list_": {},
+  "foreach_clamp_min_scalar": {},
+  "foreach_clamp_min_scalar_": {},
+  "foreach_clamp_min_scalar_list": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_clamp_min_scalar_list_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_copy": {},
+  "foreach_copy_": {},
+  "foreach_cos": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_cos_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_cosh": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_cosh_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_div_list": {},
+  "foreach_div_list_": {},
+  "foreach_div_scalar": {},
+  "foreach_div_scalar_": {},
+  "foreach_div_scalar_list": {},
+  "foreach_div_scalar_list_": {},
+  "foreach_div_tensor": {},
+  "foreach_div_tensor_": {},
+  "foreach_erf": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_erf_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_erfc": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_erfc_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_exp": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_exp_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_expm1": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_expm1_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_floor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_floor_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_frac": {},
+  "foreach_frac_": {},
+  "foreach_lerp_list": {},
+  "foreach_lerp_list_": {},
+  "foreach_lerp_scalar": {},
+  "foreach_lerp_scalar_": {},
+  "foreach_lerp_scalar_list": {},
+  "foreach_lerp_scalar_list_": {},
+  "foreach_lgamma": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_lgamma_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_log": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_log10": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_log10_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_log1p": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_log1p_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_log2": {},
+  "foreach_log2_": {},
+  "foreach_log_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_max": {},
+  "foreach_maximum_list": {},
+  "foreach_maximum_list_": {},
+  "foreach_maximum_scalar": {},
+  "foreach_maximum_scalar_": {},
+  "foreach_maximum_scalar_list": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_maximum_scalar_list_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_minimum_list": {},
+  "foreach_minimum_list_": {},
+  "foreach_minimum_scalar": {},
+  "foreach_minimum_scalar_": {},
+  "foreach_minimum_scalar_list": {},
+  "foreach_minimum_scalar_list_": {},
+  "foreach_mul_list": {},
+  "foreach_mul_list_": {},
+  "foreach_mul_scalar": {},
+  "foreach_mul_scalar_": {},
+  "foreach_mul_scalar_list": {},
+  "foreach_mul_scalar_list_": {},
+  "foreach_mul_tensor": {},
+  "foreach_mul_tensor_": {},
+  "foreach_neg": {},
+  "foreach_neg_": {},
+  "foreach_norm_scalar": {},
+  "foreach_pow_list": {},
+  "foreach_pow_list_": {},
+  "foreach_pow_scalar": {},
+  "foreach_pow_scalar_": {},
+  "foreach_pow_scalar_and_tensor": {},
+  "foreach_pow_scalar_list": {},
+  "foreach_pow_scalar_list_": {},
+  "foreach_reciprocal": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_reciprocal_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_round": {},
+  "foreach_round_": {},
+  "foreach_rsqrt": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_rsqrt_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sigmoid": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sigmoid_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sign": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sign_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sin": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sin_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sinh": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sinh_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_sqrt": {},
+  "foreach_sqrt_": {},
+  "foreach_sub_list": {},
+  "foreach_sub_list_": {},
+  "foreach_sub_scalar": {},
+  "foreach_sub_scalar_": {},
+  "foreach_sub_scalar_list": {},
+  "foreach_sub_scalar_list_": {},
+  "foreach_tan": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_tan_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_tanh": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_tanh_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "foreach_trunc": {},
+  "foreach_trunc_": {},
+  "foreach_zero": {},
+  "foreach_zero_": {},
+  "fp8_fp4_mega_moe": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。FP8 四层: kernel=PASS(仓库torch_ref), reference=UNAVAILABLE(CUDA-only vLLM), runtime=enflame GCU, performance=N/A；原文件已含 enflame 条件 skip"
+  },
+  "fp8_fp4_mqa_logits": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。FP8 四层: kernel=PASS(纯torch ref 2/2), reference=UNAVAILABLE(CUDA-only vLLM), runtime=enflame GCU, performance=N/A；按原则10 补 enflame 条件 skip"
+  },
+  "fp8_fp4_paged_mqa_logits": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。FP8 四层: kernel=PASS(仓库compat torch ref), reference=UNAVAILABLE(CUDA-only vLLM), runtime=enflame GCU, performance=N/A；原文件已含 enflame 条件 skip"
+  },
+  "fp8_mqa_logits": {
+    "note": "env: only the CRITICAL-0 global 64-bit int switch; no fallback_cpu, no --ref cpu. FP8 layers: kernel=PASS 5/5 (non-CUDA uses a dequantized pure-torch reference), reference=UNAVAILABLE (CUDA-only vLLM), runtime=enflame GCU, performance=N/A. The whole-file enflame skip was replaced by a reference-availability skip, so enflame now runs the accuracy cases."
+  },
+  "fp8_paged_mqa_logits": {
+    "note": "env: same as above. FP8 layers: kernel=PASS 4/4 (non-CUDA decodes the uint8 paged cache for a pure-torch reference), reference=UNAVAILABLE (CUDA-only vLLM), runtime=enflame GCU, performance=N/A. Case-level skip only; enflame now runs the accuracy cases."
+  },
+  "frac": {},
+  "frac_": {},
+  "fractional_max_pool2d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fractional_max_pool2d_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fractional_max_pool3d": {},
+  "fractional_max_pool3d_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "frexp": {},
+  "frobenius_norm": {},
+  "full": {},
+  "full_like": {},
+  "functional_assert_async": {},
+  "functional_sym_constrain_range": {},
+  "functional_sym_constrain_range_for_size": {},
+  "fused_adagrad_": {},
+  "fused_adam": {},
+  "fused_adam_": {},
+  "fused_adamw_": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "fused_adamw__tensor_lr": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "fused_add_rms_norm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "fused_deepseek_v4_qnorm_rope_kv_rope_insert": {},
+  "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert": {},
+  "fused_experts_impl": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "fused_indexer_q_rope_quant": {
+    "skip": "yes",
+    "skip_reason": "ref_cuda"
+  },
+  "fused_inv_rope_fp8_quant": {},
+  "fused_marlin_moe_w4a16_int4": {},
+  "fused_marlin_moe_w4a16_mxfp4": {},
+  "fused_marlin_moe_w8a16_int8": {},
+  "fused_moving_avg_obs_fake_quant": {},
+  "fused_moving_avg_obs_fq_helper": {},
+  "fused_q_kv_rmsnorm": {},
+  "fused_recurrent_gated_delta_rule_fwd": {},
+  "fused_rms_norm": {},
+  "fused_rms_norm_backward": {},
+  "fused_sgd_": {
+    "note": "accuracy reference always runs on device via native torch._fused_sgd_ (the CPU aten kernel lacks the amp overloads and is wrong for half precision), so --ref=cpu still executes float32: 100 cases PASS. float16/bfloat16 skipped (native reference does not implement the half-precision step), float64 skipped (unsupported). The whole-file skip flag was removed."
+  },
+  "fw_primal_copy": {},
+  "fw_primal_copy_out": {},
+  "gather": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "gather_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "gather_block_quantized": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "gather_sparse_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "gcd": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "gcd_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "gcd_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "ge": {},
+  "ge_scalar": {},
+  "ge_scalar_": {},
+  "ge_tensor_": {},
+  "geglu": {},
+  "gelu": {
+    "pytest_config": "--ref=cpu"
+  },
+  "gelu_": {
+    "pytest_config": "--ref=cpu"
+  },
+  "gelu_and_mul": {
+    "env_config": "ENFLAME_PT_GELU_ERF_ENABLE=true ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "gelu_backward": {},
+  "geometric": {},
+  "geometric_": {},
+  "geqrf": {},
+  "ger": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "get_paged_mqa_logits_metadata": {
+    "note": "accuracy: non-CUDA backends compare against a pure-python schedule reference for num_sms=1/24/78, 4/4 PASS; the vLLM deep_gemm reference is used on CUDA only."
+  },
+  "get_scheduler_metadata": {
+    "note": "whole-file skip kept: the only oracle is the CUDA FA3 scheduler op and a torch rewrite would restate the implementation under test, so no case-level skip is possible on non-CUDA vendors."
+  },
+  "glu": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "glu_backward": {},
+  "glu_backward_jvp": {},
+  "glu_jvp": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "gradient": {},
+  "greater": {},
+  "greater_": {},
+  "greater_equal": {},
+  "greater_equal_": {},
+  "greater_equal_scalar": {},
+  "greater_out": {},
+  "greater_scalar": {},
+  "greater_scalar_out": {},
+  "grid_sampler": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "grid_sampler_2d": {},
+  "grid_sampler_2d_backward": {},
+  "grid_sampler_3d": {},
+  "grid_sampler_3d_backward": {},
+  "group_norm": {},
+  "group_norm_backward": {},
+  "grouped_matmul": {
+    "note": "whole-file skip kept: the implementation is registered for the Ascend backend only, so flag_gems.grouped_matmul does not exist here and there is nothing to validate (not an accuracy issue)."
+  },
+  "grouped_mm": {},
+  "grouped_mm_w8a8": {},
+  "grouped_topk": {},
+  "gru": {},
+  "gru_cell": {},
+  "gru_data": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关；不需要 fallback_cpu，也不需要 --ref cpu。实测 tests/test_quantized_gru.py 在不设 ENFLAME_PT_OP_DEBUG_CONFIG 时 26 passed (79s)；先前 fallback_cpu=all_ops 口径下同一份用例耗时 335s，且参考腿跑在 CPU 上，benchmark 的 speedup 会变成跨设备比较，故移除该口径。"
+  },
+  "gt": {},
+  "gt_scalar": {},
+  "gt_scalar_": {},
+  "gt_tensor_": {},
+  "hamming_window": {},
+  "hamming_window_periodic": {},
+  "hamming_window_periodic_alpha": {},
+  "hamming_window_periodic_alpha_beta": {},
+  "hardshrink": {},
+  "hardshrink_backward": {},
+  "hardshrink_out": {},
+  "hardsigmoid": {},
+  "hardsigmoid_": {},
+  "hardsigmoid_backward": {},
+  "hardsigmoid_out": {},
+  "hardswish": {},
+  "hardswish_": {},
+  "hardswish_backward": {},
+  "hardswish_out": {},
+  "hardtanh": {},
+  "hardtanh_": {},
+  "hardtanh_backward": {},
+  "hardtanh_out": {},
+  "has_compatible_shallow_copy_type": {},
+  "has_same_storage_numel": {},
+  "hash_tensor": {},
+  "hc_head_fused_kernel": {},
+  "hc_split_sinkhorn_forward": {},
+  "heaviside": {},
+  "heaviside_": {
+    "pytest_config": "--ref=cpu"
+  },
+  "hinge_embedding_loss": {},
+  "histc": {},
+  "histogram": {},
+  "histogramdd": {},
+  "histogramdd_from_bin_cts": {},
+  "histogramdd_from_bin_cts_out": {},
+  "histogramdd_from_bin_tensors": {},
+  "histogramdd_from_bin_tensors_out": {},
+  "hsplit": {},
+  "hspmm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "no",
+    "备注": "benchmark 实测可用（aten::hspmm 在 torch_gcu 上可跑通，7 个 shape 全 SUCCESS）；gcu400 已修复 nnz>65535 时 grid=(nnz,) 触发 grid.x 越界的 OutOfResources，改为固定 grid + BLOCK_ROWS 行分块 + stride 循环，kernel 侧比参考快 4~6x，端到端受输出稀疏张量 100MB 级 D2H 拷贝约束，约 0.95~1.03x；correctness 146 passed"
+  },
+  "hstack": {},
+  "huber_loss": {},
+  "huber_loss_out": {},
+  "hypot": {},
+  "hypot_": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "hypot_out": {},
+  "i0": {},
+  "i0_": {},
+  "i0_out": {},
+  "iand_scalar": {},
+  "iand_tensor": {},
+  "igamma": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。正确性修复: igamma_kernel 的 BLOCK_SIZE 由 512 改为 256（GCU 后端分块 >256 时该 kernel 结果全错，256 是已验证最大分块，与 igamma_ 一致）；修复后 test_igamma.py 18 passed，默认口径与 --ref cpu 一致"
+  },
+  "igamma_": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 6 passed / 6 skipped（skip 为 dtype 能力，见 utils.fp64_is_supported），默认口径与 --ref cpu 结果一致；本轮(2026-11-17)优化：num_warps 1/2/4/8 实测在 1M 与 16M 上完全同值（3.81ms / 61.47~61.49ms），几何不是瓶颈（成本在超越函数吞吐），未改代码；vs device aten 实测 17.0x(16M)/22.9x(1M)/43.2x(64K)"
+  },
+  "igammac": {
+    "pytest_config": "--ref=cpu",
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量；correctness 需 pytest 参数 --ref=cpu（GCU 上 aten igammac 的 fp64 参考自身误差最高 1.25e-3（a=1000,x=1000.9 时 torch.igammac(fp64,GCU)=0.483196 vs CPU 0.484448），默认 GCU 参考口径 17 项边界用例失败；--ref cpu 复核 120 passed / 3 skipped）；benchmark 不加 --ref cpu；kernel 侧本轮改动为 asym 展开抽成 _igammac_asym + tl.max 做 tile 级条件跳过，fallback 实测不必要"
+  },
+  "igammac_": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 12 passed（test_igammac_.py，与 special_gammaincc 同文件同口径），fallback 实测不必要"
+  },
+  "igammac_out": {
+    "pytest_config": "--ref=cpu",
+    "备注": "环境变量口径: 与 igammac 同文件同口径——仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)，无 fallback CPU 变量，correctness 需 --ref=cpu（参考侧证据同 igammac 条目），benchmark 不加；out 变体 fallback 实测不必要；本轮(2026-11-17)复核：correctness --ref=cpu 实测 120 passed / 3 skipped / 0 failed；几何扫参 BLOCK×warps 6 组合(128/256/512/1024 × nw2/4/8) 在 1M 与 16M 上完全相同（6.24ms / 196.92~197.07ms），判定为超越函数吞吐受限、几何非杠杆，未改代码"
+  },
+  "ilshift": {},
+  "im2col": {},
+  "index": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "index_add": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "index_add_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "index_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "index_copy_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "index_fill": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "index_fill_": {},
+  "index_put": {},
+  "index_put_": {},
+  "index_put_impl_": {},
+  "index_reduce": {},
+  "index_reduce_": {
+    "pytest_config": "--ref=cpu"
+  },
+  "index_reduce_out": {
+    "pytest_config": "--ref=cpu"
+  },
+  "index_select": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关；不需要 fallback_cpu，也不需要 --ref cpu。实测 tests/test_index_select.py 在不设 ENFLAME_PT_OP_DEBUG_CONFIG 时 18 passed (3.7s)。此前记录的 fallback_cpu=all_ops 口径会把参考腿压到 CPU：correctness 退化到 100s，benchmark 的 speedup 也变成 CPU-aten / GCU-Triton 的跨设备比较 (10000x65536 虚高到 470x)，故移除该口径。"
+  },
+  "index_select_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "indexer_k_quant_and_cache": {},
+  "indices": {},
+  "indices_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "indices_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "infinitely_differentiable_gelu_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "inner": {},
+  "inplace_fused_experts": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "instance_norm": {},
+  "int_mm": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 108 passed（tests/test_int_mm.py 的 _SUPPORTED_VENDORS 增补 enflame）；benchmark int_mm/int_mm_out 均 2 passed、3 shapes 全 SUCCESS（torch 侧 _int_mm 在 GCU 走 CPU fallback，speedup 虚高仅作参考）；kernel 自身吞吐 12.6 → 220+ TOPS（BLOCK_K 提到 1024 + 按 M/N 收敛 tile）"
+  },
+  "int_mm_out": {},
+  "int_repr": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 223 passed / 5 skipped（重新启用 24 个 layout 用例，channels_last 因 to_reference 的量化 clone 断言保留条件 skip）；dense span 改为 int64 宽视图 + 固定 48 program 循环搬 64KB，16M 元素 0.0663 → 0.0179 ms（约 3.7x，1900 GB/s，ATen clone roofline 约 2000 GB/s）"
+  },
+  "int_repr_out": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 与 int_repr 同批用例覆盖（out 重载 223 passed / 5 skipped）；benchmark int_repr_out 2 passed；out 路径与 int_repr 共用同一 dense 宽视图拷贝内核，预分配 out 时 16M 元素约 0.0179 ms"
+  },
+  "inverse": {},
+  "ior_scalar": {},
+  "ior_tensor": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "irshift": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "is_all_true": {},
+  "is_any_true": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "is_nonzero": {},
+  "is_same_size": {},
+  "isclose": {},
+  "isfinite": {},
+  "isin": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "isin_scalar_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "isin_tensor_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "isinf": {},
+  "isnan": {},
+  "isneginf": {},
+  "isneginf_out": {},
+  "isposinf": {},
+  "isreal": {},
+  "istft": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "ixor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "jagged_to_padded_dense_forward": {},
+  "kaiser_window": {},
+  "kaiser_window_beta": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "kaiser_window_periodic": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "kl_div": {},
+  "kron": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "kthvalue": {},
+  "l1_loss": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "layer_norm": {},
+  "layer_norm_backward": {},
+  "lcm": {},
+  "lcm_": {},
+  "ldexp": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "ldexp_": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "ldexp_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "le": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "le_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "le_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "le_scalar_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "leaky_relu": {},
+  "leaky_relu_": {},
+  "leaky_relu_backward": {},
+  "leaky_relu_out": {},
+  "lerp_scalar": {},
+  "lerp_scalar_": {},
+  "lerp_tensor": {},
+  "lerp_tensor_": {},
+  "less_": {},
+  "less_equal": {},
+  "less_equal_": {},
+  "less_equal_scalar": {},
+  "less_equal_scalar_": {},
+  "less_scalar_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "lgamma": {},
+  "lgamma_": {},
+  "lift": {},
+  "lift_fresh": {},
+  "lift_fresh_copy": {},
+  "lift_out": {},
+  "linalg__powsum": {},
+  "linalg_cholesky": {},
+  "linalg_cholesky_ex": {},
+  "linalg_cond": {},
+  "linalg_cross": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "linalg_cross_out": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "linalg_det": {},
+  "linalg_det_out": {},
+  "linalg_eig": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "linalg_eigh": {},
+  "linalg_eigvals": {},
+  "linalg_eigvals_out": {},
+  "linalg_eigvalsh": {},
+  "linalg_eigvalsh_out": {},
+  "linalg_householder_product": {},
+  "linalg_inv": {},
+  "linalg_inv_ex": {},
+  "linalg_ldl_factor": {},
+  "linalg_ldl_factor_ex": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "linalg_ldl_solve": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "linalg_lstsq": {},
+  "linalg_lu": {},
+  "linalg_lu_factor": {},
+  "linalg_lu_factor_ex": {},
+  "linalg_lu_factor_ex_out": {},
+  "linalg_lu_factor_out": {},
+  "linalg_lu_out": {},
+  "linalg_lu_solve": {},
+  "linalg_matmul": {},
+  "linalg_matrix_exp": {},
+  "linalg_matrix_exp_out": {},
+  "linalg_matrix_norm": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "linalg_matrix_norm_out": {},
+  "linalg_matrix_power": {},
+  "linalg_matrix_power_out": {},
+  "linalg_matrix_rank": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 125 passed / 31 skipped（fp64/complex 能力 skip），默认与 --ref cpu 结果一致；默认口径 1040s 对 --ref cpu 26s 的差异来自 GCU fp64 参考实现本身慢，非 kernel 问题"
+  },
+  "linalg_matrix_rank_atol_rtol_float": {},
+  "linalg_matrix_rank_atol_rtol_float_out": {},
+  "linalg_matrix_rank_atol_rtol_tensor": {},
+  "linalg_matrix_rank_atol_rtol_tensor_out": {},
+  "linalg_matrix_rank_hermitian": {},
+  "linalg_matrix_rank_out": {},
+  "linalg_matrix_rank_out_tol_tensor": {},
+  "linalg_matrix_rank_tol_tensor": {},
+  "linalg_matrix_sqrth": {},
+  "linalg_matrix_sqrth_out": {},
+  "linalg_multi_dot": {},
+  "linalg_multi_dot_out": {},
+  "linalg_norm": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "linalg_pinv": {},
+  "linalg_polar": {},
+  "linalg_polar_out": {},
+  "linalg_qr": {},
+  "linalg_qr_out": {
+    "pytest_config": "--ref=cpu"
+  },
+  "linalg_slogdet": {},
+  "linalg_solve": {},
+  "linalg_solve_ex": {},
+  "linalg_solve_triangular": {},
+  "linalg_solve_triangular_out": {},
+  "linalg_svd": {},
+  "linalg_svdvals": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "linalg_tensorinv": {},
+  "linalg_tensorinv_out": {},
+  "linalg_tensorsolve": {},
+  "linalg_vander": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "linalg_vecdot": {},
+  "linalg_vecdot_out": {},
+  "linalg_vector_norm": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "linear": {},
+  "linear_backward": {},
+  "linspace": {},
+  "list_to_tensor": {},
+  "log": {},
+  "log10": {},
+  "log10_": {},
+  "log10_out": {},
+  "log1p": {},
+  "log1p_": {},
+  "log2": {},
+  "log2_": {},
+  "log_": {},
+  "log_normal": {},
+  "log_normal_": {},
+  "log_sigmoid": {},
+  "log_sigmoid_backward": {},
+  "log_sigmoid_backward_out": {},
+  "log_sigmoid_forward": {},
+  "log_softmax": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "log_softmax_backward_data": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "log_softmax_backward_data_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "log_softmax_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "logaddexp": {},
+  "logaddexp2": {
+    "pytest_config": "--ref=cpu"
+  },
+  "logaddexp2_out": {},
+  "logaddexp_out": {},
+  "logcumsumexp": {},
+  "logcumsumexp_out": {},
+  "logdet": {},
+  "logical_and": {},
+  "logical_and_": {},
+  "logical_not": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "logical_not_": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "logical_or": {},
+  "logical_or_": {},
+  "logical_xor": {},
+  "logical_xor_": {},
+  "logit": {},
+  "logit_": {},
+  "logit_backward": {},
+  "logit_out": {},
+  "logspace": {},
+  "logsumexp": {},
+  "lshift_scalar": {},
+  "lshift_tensor": {},
+  "lstm": {},
+  "lstm_cell": {},
+  "lt": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "lt_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "lt_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "lt_scalar_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "lu_solve": {},
+  "lu_solve_out": {},
+  "lu_unpack": {},
+  "lu_unpack_out": {},
+  "lu_with_info": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "make_dep_token": {},
+  "make_dual_copy": {},
+  "make_dual_copy_out": {},
+  "make_per_channel_quantized_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "make_per_tensor_quantized_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "make_per_tensor_quantized_tensor_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "margin_ranking_loss": {},
+  "margin_ranking_loss_backward": {},
+  "masked_fill": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "masked_fill_": {},
+  "masked_fill_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "masked_fill_scalar_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "masked_scale": {},
+  "masked_scatter": {},
+  "masked_scatter_": {},
+  "masked_scatter_backward": {},
+  "masked_select": {},
+  "masked_select_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "masked_softmax": {},
+  "masked_softmax_backward": {},
+  "matmul_backward": {},
+  "matmul_bias_activation": {},
+  "matmuladd": {},
+  "matrix_exp": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "matrix_exp_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "matrix_power": {},
+  "matrix_power_out": {},
+  "max": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "max_dim": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "max_pool1d": {},
+  "max_pool1d_with_indices": {},
+  "max_pool2d_backward": {
+    "pytest_config": "--ref=cpu"
+  },
+  "max_pool2d_with_indices": {
+    "pytest_config": "--ref=cpu"
+  },
+  "max_pool2d_with_indices_backward": {},
+  "max_pool3d": {},
+  "max_pool3d_with_indices": {},
+  "max_pool3d_with_indices_backward": {},
+  "max_unpool2d": {},
+  "max_unpool3d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "maximum": {},
+  "mean": {},
+  "mean_dim": {},
+  "median": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "median_dim": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "median_dim_values": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "median_out": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "mH": {},
+  "mhc_bwd": {},
+  "mhc_post": {},
+  "mhc_pre": {},
+  "min": {
+    "pytest_config": "--ref=cpu"
+  },
+  "min_dim": {},
+  "minimum": {},
+  "miopen_batch_norm": {},
+  "miopen_batch_norm_backward": {},
+  "mish": {},
+  "mish_": {},
+  "mish_backward": {},
+  "mixed_dtypes_linear": {},
+  "mkldnn_reorder_conv2d_weight": {},
+  "mkldnn_reorder_conv2d_weight_out": {},
+  "mkldnn_rnn_layer": {
+    "skip": "yes",
+    "skip_reason": "ref_cuda"
+  },
+  "mm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "mm_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "mm_self_transpose": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "mm_w8a8": {
+    "skip": "yes",
+    "skip_reason": "tests/test_mm_w8a8_int8.py 模块级 pytestmark 对 enflame 整体 skip"
+  },
+  "mm_w8a8_out": {
+    "skip": "yes",
+    "skip_reason": "tests/test_mm_w8a8_int8.py 模块级 pytestmark 对 enflame 整体 skip"
+  },
+  "mode": {},
+  "moe_align_block_size_triton": {},
+  "moe_load_balance_loss": {},
+  "moe_sum": {},
+  "moveaxis": {},
+  "movedim": {},
+  "mse_loss": {},
+  "mse_loss_backward": {},
+  "msort": {},
+  "msort_out": {},
+  "mT": {},
+  "mul": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "mul_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "multi_margin_loss": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "multi_margin_loss_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "multi_margin_loss_backward_out": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "multi_margin_loss_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "multilabel_margin_loss": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "multilabel_margin_loss_forward": {},
+  "multinomial": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "multiply": {},
+  "multiply_": {},
+  "multiply_scalar": {},
+  "mv": {
+    "pytest_config": "--ref=cpu"
+  },
+  "mvlgamma": {},
+  "mvlgamma_": {},
+  "nan_to_num": {},
+  "nan_to_num_": {},
+  "nanmean": {},
+  "nanmean_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nanmedian": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "nanmedian_dim": {
+    "pytest_config": "--ref=cpu"
+  },
+  "nanmedian_dim_values": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nanmedian_out": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "nanquantile": {},
+  "nanquantile_out": {},
+  "nanquantile_scalar": {},
+  "nanquantile_scalar_out": {},
+  "nansum": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nansum_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "narrow_copy": {},
+  "native_batch_norm": {},
+  "native_batch_norm_backward": {},
+  "native_batch_norm_legit": {},
+  "native_batch_norm_legit_functional": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "native_batch_norm_legit_no_stats": {},
+  "native_batch_norm_legit_no_stats_out": {},
+  "native_batch_norm_legit_no_training": {},
+  "native_batch_norm_legit_out": {},
+  "native_channel_shuffle": {},
+  "native_dropout": {},
+  "native_dropout_backward": {},
+  "native_group_norm": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "native_group_norm_backward": {},
+  "native_layer_norm": {},
+  "native_multi_head_attention": {},
+  "native_norm": {},
+  "ne": {},
+  "ne_": {},
+  "ne_scalar": {},
+  "neg": {},
+  "neg_": {},
+  "neg_view_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "neg_view_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "negative": {},
+  "negative_": {},
+  "nested_compute_contiguous_strides_offsets": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nested_from_padded_tensor": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关；不需要 fallback_cpu/--ref cpu。实测 tests/test_nested_from_padded_tensor.py 不设 ENFLAME_PT_OP_DEBUG_CONFIG 时 30 passed (0 skipped)。"
+  },
+  "nested_select_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nested_sum_backward": {},
+  "nested_tensor_from_mask": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "nested_tensor_from_mask_left_aligned": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "nested_tensor_from_tensor_list": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nested_tensor_softmax_with_shape": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nested_tensor_storage_offsets": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nested_to_padded_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "nested_view_from_buffer_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "nested_view_from_jagged": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nested_view_from_jagged_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "new_full": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "new_ones": {},
+  "new_zeros": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "sparse"
+  },
+  "new_zeros_out": {},
+  "new_zeros_with_same_feature_meta": {},
+  "nextafter": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nextafter_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nll_loss2d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nll_loss2d_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nll_loss2d_forward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nll_loss_backward": {},
+  "nll_loss_forward": {},
+  "nll_loss_nd_backward": {},
+  "nll_loss_nd_forward": {},
+  "nnpack_spatial_convolution": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nnpack_spatial_convolution_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nnz": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "nonzero": {
+    "pytest_config": "--ref=cpu"
+  },
+  "nonzero_numpy": {},
+  "nonzero_static": {},
+  "nonzero_static_out": {},
+  "norm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "norm_except_dim": {},
+  "norm_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "norm_scalaropt_dim": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "normal_": {},
+  "normal_float_float_": {},
+  "normal_float_tensor": {},
+  "normal_functional": {},
+  "normal_tensor_float": {},
+  "normal_tensor_tensor": {},
+  "normed_cumsum": {},
+  "not_equal": {},
+  "not_equal_": {},
+  "not_equal_scalar": {},
+  "nuclear_norm": {},
+  "numpy_T": {},
+  "one_hot": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "ones": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "ones_like": {},
+  "or_scalar": {},
+  "or_tensor": {},
+  "orgqr": {
+    "pytest_config": "--ref=cpu"
+  },
+  "orgqr_out": {},
+  "ormqr": {},
+  "outer": {},
+  "outplace_fused_experts": {},
+  "pack_padded_sequence": {},
+  "pack_seq_triton": {},
+  "pad": {},
+  "pad_circular": {},
+  "pad_enum": {},
+  "pad_packed_sequence": {},
+  "pad_sequence": {},
+  "padded_dense_to_jagged_forward": {
+    "pytest_config": "--ref=cpu",
+    "备注": "2026-11-19 fix+opt（gcu400/ops/padded_dense_to_jagged_forward.py，job j20261119082140_9633126c）：原 fp64 腿 view(int64) 越实存写设备 abort（torch_gcu fp64 实为 packed-fp32 半幅存储，P04 fp64 家族）→ 改 int32 槽域视图（packed 位级 保真、与 aten 腿逐位一致）；另以 8 字节通道 view（bf16/fp32 并入 fp16 制式）+ 胖块 min(8192|32768, next_pow2(序列车道)) + grid cap 256 + 块内 grid-stride 消 ~52ns/program 派发税。官方 bench core 10/10 PASS（50 case mean speedup 592.7x、min 18.5x），大形状 gems 3.9-5.1ms → 28-157µs；pytest --quick 59P/11S/0F（11 skip 为 enflame fp64 既有 skipif）。无需 fallback_cpu（aten 腿 GCU 原生可跑，fp64 由 torch_gcu 自身降级）；ENV_GATE: TORCH_GCU_ENABLE_INT64_AND_UINT64=1（全局定标默认开）。"
+  },
+  "pairwise_distance": {},
+  "pdist": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "pdist_backward": {},
+  "pdist_forward": {},
+  "per_token_group_quant_fp8": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "permute_copy": {},
+  "philox_normal_": {},
+  "pin_memory": {},
+  "pinverse": {},
+  "pixel_shuffle": {},
+  "pixel_unshuffle": {},
+  "pixel_unshuffle_out": {},
+  "poisson": {},
+  "poisson_nll_loss": {},
+  "polar": {},
+  "polygamma": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "polygamma_": {},
+  "polygamma_out": {},
+  "post_layer_norm_residual": {},
+  "pow_scalar": {},
+  "pow_tensor_scalar": {},
+  "pow_tensor_scalar_": {},
+  "pow_tensor_tensor": {},
+  "pow_tensor_tensor_": {},
+  "prelu": {},
+  "prelu_kernel": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "prelu_kernel_backward": {},
+  "prod": {},
+  "prod_dim_int": {},
+  "put": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "put_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "topsAten"
+  },
+  "put_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantile": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantize_per_channel": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 实测 44 passed / 140 skipped（dtype/scale 组合能力 skip），默认与 --ref cpu 完全一致，故移除历史 fallback 与 --ref cpu 依赖"
+  },
+  "quantize_per_channel_out": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 与 quantize_per_channel 同文件同口径，默认与 --ref cpu 一致，fallback 不必要；本轮(2026-11-17)复核 correctness 随 quantize_per_channel 同批实测全绿（527 passed / 154 skipped 批内）；未改代码"
+  },
+  "quantize_per_tensor": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 默认口径 378 passed / 1 skipped 优于 --ref cpu 的 353 passed / 26 skipped，故默认口径为准并移除历史 fallback 依赖"
+  },
+  "quantize_per_tensor_out": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 与 quantize_per_tensor 同文件同口径（默认口径最佳），fallback 不必要；本轮(2026-11-17)实测 vs device aten：64K 3.00x(81.5us/245.0us)、1M 18.90x(81.7us/1542.8us)、16M 141.05x(379.0us/53454.9us)；launcher 内 BLOCK_SIZE=4096 与 num_warps 已由既有 sweep 结论锁定（>8192 更快/更慢均被证伪），未改代码"
+  },
+  "quantized_batch_norm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantized_batch_norm_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantized_gru": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关；不需要 fallback_cpu，也不需要 --ref cpu。实测 tests/test_quantized_gru.py 在不设 ENFLAME_PT_OP_DEBUG_CONFIG 时 26 passed (79s)；先前 fallback_cpu=all_ops 口径下同一份用例耗时 335s，且参考腿跑在 CPU 上，benchmark 的 speedup 会变成跨设备比较，故移除该口径。"
+  },
+  "quantized_lstm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantized_max_pool1d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantized_max_pool1d_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantized_max_pool2d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "quantized_max_pool2d_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "quantized_max_pool3d": {},
+  "quantized_max_pool3d_out": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。本轮(2026-11-17)复核 correctness 随 quantized_max_pool3d 同批实测全绿（527 passed / 154 skipped 批内）。基准侧：本机 pytorch 构建中 aten::quantized_max_pool3d 未注册 QuantizedCPU 实现（NotImplementedError，可选后端列表含 PrivateUse1/QuantizedPrivateUse1），故未产出 speedup 数字，未改代码"
+  },
+  "rad2deg": {},
+  "rad2deg_": {},
+  "rand": {},
+  "rand_like": {},
+  "randint": {},
+  "randint_like": {},
+  "randn": {},
+  "randn_like": {},
+  "randperm": {
+    "skip": "yes"
+  },
+  "range": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "ravel": {},
+  "real": {},
+  "reciprocal": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "reciprocal_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "reflection_pad1d": {},
+  "reflection_pad1d_backward": {},
+  "reflection_pad1d_out": {},
+  "reflection_pad2d": {},
+  "reflection_pad2d_backward": {},
+  "reflection_pad2d_out": {},
+  "reflection_pad3d": {},
+  "reflection_pad3d_backward": {},
+  "reglu": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 依赖 NVIDIA TransformerEngine(enflame 后端不可用)，已按原则10 在 tests/test_reglu.py 加显式 enflame 条件 skip；其它 vendor 零影响。本批标 SKIPPED(依赖缺失)。"
+  },
+  "relu": {},
+  "relu6": {},
+  "relu6_": {},
+  "relu_": {},
+  "remainder": {
+    "pytest_config": "--ref=cpu"
+  },
+  "remainder_scalar": {},
+  "remainder_scalar_": {},
+  "remainder_scalar_tensor": {},
+  "remainder_tensor": {
+    "pytest_config": "--ref=cpu"
+  },
+  "remainder_tensor_": {},
+  "renorm": {},
+  "renorm_": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "repeat": {},
+  "repeat_interleave_self_int": {},
+  "repeat_interleave_self_tensor": {},
+  "repeat_interleave_tensor": {},
+  "replication_pad1d": {},
+  "replication_pad1d_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "replication_pad1d_out": {},
+  "replication_pad2d": {},
+  "replication_pad2d_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "replication_pad2d_backward_grad_input": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "replication_pad2d_out": {},
+  "replication_pad3d": {},
+  "replication_pad3d_backward": {},
+  "reshape_and_cache": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "reshape_and_cache_flash": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "resize": {},
+  "resize_": {},
+  "resize_as": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "resize_as_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "resize_as_sparse_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "resize_output": {},
+  "resize_output_": {},
+  "resolve_conj": {},
+  "resolve_neg": {},
+  "rms_norm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "rms_norm_w8a16": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 依赖 W8A16 E4M3FN 权重反量化参考(thead/mthreads/metax 专用，enflame 无对应参考)，已按原则10 在 tests/test_rms_norm_w8a16_fp8.py 的 4 处 skipif 加显式 enflame 判断；其它 vendor 零影响。本批标 SKIPPED(能力缺失)。"
+  },
+  "rnn_relu": {},
+  "rnn_relu_cell": {},
+  "rnn_tanh": {
+    "env_config": "仅 CRITICAL-0 全局默认 64 位整数开关",
+    "备注": "correctness 23 passed / 0 skipped（tests/test_rnn_tanh.py，含 rnn_tanh.data）。两处修复：(1) 用例准入白名单原只含 cuda/npu/musa，gcu 被整体 skip，已按「后端具备 Triton rnn_tanh 实现 + GCU aten 参考可用」补入 gcu(enflame)；(2) 修 kernel 精度：fp16 循环项原先把隐藏状态截断到 fp16 再送 tensor core，单步 ~1e-3 误差沿时间步放大（64x16x128-fp16 实测偏离 fp32 高精度解 1.49），改为循环项 fp32 矩阵乘后偏差降到 2.4e-4。性能侧 flag_gems 仍是原生 aten 的 13~41x（A/B 量级见报告）。"
+  },
+  "rnn_tanh_cell": {},
+  "rnn_tanh_data": {},
+  "roll": {},
+  "rot90": {},
+  "round": {},
+  "round_": {},
+  "round_out": {},
+  "router_gemm": {},
+  "row_indices": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "row_indices_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "row_indices_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "row_stack": {},
+  "row_stack_out": {},
+  "rrelu": {},
+  "rrelu_": {},
+  "rrelu_with_noise": {},
+  "rrelu_with_noise_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "ref_cpu"
+  },
+  "rrelu_with_noise_backward": {},
+  "rrelu_with_noise_functional": {},
+  "rshift_scalar": {},
+  "rshift_scalar_out": {},
+  "rshift_tensor": {},
+  "rshift_tensor_out": {},
+  "rsqrt": {},
+  "rsqrt_": {},
+  "rsub_scalar": {},
+  "rsub_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "rwkv_ka_fusion": {},
+  "rwkv_mm_sparsity": {},
+  "safe_softmax": {},
+  "sample_dirichlet": {},
+  "scalar_tensor": {},
+  "scaled_dot_product_attention": {},
+  "scaled_dot_product_attention_backward": {},
+  "scaled_dot_product_attention_forward": {},
+  "scaled_dot_product_attention_math": {},
+  "scaled_dot_product_attention_math_for_mps": {},
+  "scaled_dot_product_cudnn_attention": {
+    "skip": "yes"
+  },
+  "scaled_dot_product_cudnn_attention_backward": {},
+  "scaled_dot_product_efficient_attention": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "scaled_dot_product_efficient_attention_backward": {},
+  "scaled_dot_product_flash_attention": {},
+  "scaled_dot_product_flash_attention_backward": {},
+  "scaled_dot_product_fused_attention_overrideable": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "scaled_dot_product_fused_attention_overrideable_backward": {},
+  "scaled_grouped_mm": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测单用例超 30s 未返回，测试已按 enflame 判定整模块跳过"
+  },
+  "scaled_grouped_mm_v2": {},
+  "scaled_mm": {},
+  "scaled_mm_out": {},
+  "scaled_softmax_backward": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 依赖 NVIDIA TransformerEngine(enflame 后端不可用)，已按原则10 在 tests/test_scaled_softmax.py 函数开头加显式 enflame 条件 skip；其它 vendor 零影响。本批标 SKIPPED(依赖缺失)。"
+  },
+  "scaled_softmax_forward": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 依赖 NVIDIA TransformerEngine(enflame 后端不可用)，已按原则10 在 tests/test_scaled_softmax.py 函数开头加显式 enflame 条件 skip；其它 vendor 零影响。本批标 SKIPPED(依赖缺失)。"
+  },
+  "scatter_add": {},
+  "scatter_add_": {},
+  "scatter_reduce": {
+    "备注": "batch10：默认口径（无 fallback_cpu）全通过，fallback 变量已移除"
+  },
+  "scatter_reduce_": {
+    "备注": "batch10：默认口径（无 fallback_cpu）全通过，fallback 变量已移除"
+  },
+  "scatter_reduce_two": {
+    "备注": "batch10：默认口径（无 fallback_cpu）全通过，fallback 变量已移除"
+  },
+  "scatter_reduce_two_": {
+    "备注": "batch10：默认口径（无 fallback_cpu）全通过，fallback 变量已移除"
+  },
+  "scatter_reduce_two_out": {
+    "备注": "batch10：默认口径（无 fallback_cpu）全通过，fallback 变量已移除"
+  },
+  "scatter_src": {},
+  "scatter_src_": {},
+  "searchsorted": {
+    "skip": "yes",
+    "skip_reason": "benchmark/test_searchsorted.py skips the whole file for enflame (stale vendor skipif); accuracy fixed to 470/470 via the PrivateUse1 reference shim + NaN-last semantics, no official latency gate available"
+  },
+  "searchsorted_out": {},
+  "searchsorted_scalar": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "searchsorted_scalar_out": {},
+  "segment_reduce": {},
+  "segment_reduce_backward": {},
+  "segment_reduce_backward_out": {},
+  "segment_reduce_out": {},
+  "select_backward": {},
+  "select_copy": {},
+  "select_scatter": {},
+  "selu": {},
+  "selu_": {},
+  "set_": {},
+  "set_source_Tensor": {},
+  "set_source_Tensor_storage_offset": {},
+  "sgn": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sgn_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sgn_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "shape_as_tensor": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "sigmoid": {},
+  "sigmoid_": {},
+  "sigmoid_backward": {},
+  "sign": {},
+  "sign_": {},
+  "sign_out": {},
+  "signbit": {},
+  "signbit_out": {},
+  "silu": {},
+  "silu_": {},
+  "silu_and_mul": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "silu_and_mul_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "silu_and_mul_with_clamp": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "silu_and_mul_with_clamp_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "silu_backward": {},
+  "sin": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sin_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sinc": {},
+  "sinc_": {},
+  "sinh": {},
+  "sinh_": {},
+  "skip_layer_norm": {},
+  "slice_backward": {},
+  "slice_copy": {},
+  "slice_copy_out": {},
+  "slice_scatter": {},
+  "slogdet": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "slow_conv2d_backward": {},
+  "slow_conv2d_forward": {},
+  "slow_conv_dilated2d": {},
+  "slow_conv_dilated2d_out": {},
+  "slow_conv_dilated3d": {},
+  "slow_conv_dilated3d_out": {},
+  "slow_conv_transpose2d": {},
+  "slow_conv_transpose3d": {},
+  "smm": {},
+  "smooth_l1_loss": {},
+  "smooth_l1_loss_backward": {},
+  "sobol_engine_draw": {},
+  "sobol_engine_ff_": {},
+  "sobol_engine_initialize_state_": {},
+  "soft_margin_loss": {},
+  "soft_margin_loss_backward": {},
+  "softmax": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "softmax_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "softmax_backward_data": {},
+  "softmax_backward_out": {},
+  "softmax_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "softplus": {},
+  "softplus_backward": {},
+  "softshrink": {},
+  "softshrink_backward": {},
+  "softshrink_out": {},
+  "sort": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sort_stable": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_attn_triton": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "备注": "环境变量口径: 本批实测未使用 fallback CPU 变量、未使用 --ref cpu；仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)。本文件既有 env_config(fallback_cpu=all_ops) 非本批实测口径，予以保留(不删其它 agent 字段)。无 correctness 用例；benchmark speedup 0.645~0.706；受 BLOCK<=64 硬件约束，无验证不做高风险改动，保留基线。"
+  },
+  "sparse_broadcast_to": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "sparse_broadcast_to_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "torch_gcu"
+  },
+  "sparse_bsc_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "sparse_bsc_tensor_unsafe": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_bsr_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_bsr_tensor_unsafe": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_compressed_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_coo_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "sparse_csc_tensor_unsafe": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "sparse"
+  },
+  "sparse_csr_tensor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_dim": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_mla_fwd_interface": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_mm_reduce_impl": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "sparse_resize_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_sampled_addmm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_sampled_addmm_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_semi_structured_addmm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_semi_structured_linear": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_semi_structured_mm": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sparse_semi_structured_tile": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "spdiags": {
+    "pytest_config": "--ref=cpu",
+    "备注": "2026-11-19 单 kernel 重写修复（gcu400/ops/spdiags.py，job j20261119063203_34e62bfb）：原实现直引 generic nonzero（int64 cumsum 在 GCU 上 SIGABRT）致 benchmark core dumped、测试模块级跳过；现单 kernel 直写紧凑 COO + 单次 D2H 读 offsets，不含 unique/nonzero/index_select。op 本体已可跑：官方 bench core 15/15 PASS（gcu 32.8-34.5us、mean speedup 3.76x），自建精度矩阵 63/63。tests/test_spdiags.py 的 enflame 模块级 skipif 为既有门（reason 已失效，建议人工移除）。ENV_GATE: 依赖 TORCH_GCU_ENABLE_INT64_AND_UINT64=1——COO 主路径 env-off 可用，但 layout=csr/csc 的 to_sparse_csr/csc 转换（torch_gcu 原生 Long 替换缺陷）env-off 段错误。"
+  },
+  "special_airy_ai": {},
+  "special_airy_ai_out": {},
+  "special_bessel_j0": {},
+  "special_bessel_j1": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_bessel_y0": {},
+  "special_bessel_y1": {},
+  "special_chebyshev_polynomial_t": {},
+  "special_chebyshev_polynomial_t_out": {},
+  "special_chebyshev_polynomial_u": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_chebyshev_polynomial_v": {},
+  "special_chebyshev_polynomial_w": {},
+  "special_chebyshev_polynomial_w_out": {},
+  "special_digamma": {},
+  "special_entr": {},
+  "special_erf": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "special_erfc": {},
+  "special_erfcx": {},
+  "special_erfinv": {},
+  "special_erfinv_": {},
+  "special_erfinv_out": {},
+  "special_exp2": {},
+  "special_expit": {},
+  "special_expm1": {},
+  "special_gammainc": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "special_gammaincc": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。实现修复: special_gammaincc 与 igammac 数学等价，改为直接复用 gcu400 的 igammac kernel（原 pointwise_dynamic kernel 同样受分块过大问题影响，a,x∈[0.1,1.1] 时 100% 元素不匹配、最大绝对误差 20.6）；修复后 test_igammac_.py 12 passed，fallback 实测不必要"
+  },
+  "special_gammaln": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_gammaln_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_hermite_polynomial_h": {},
+  "special_hermite_polynomial_he": {},
+  "special_i0": {},
+  "special_i0_out": {},
+  "special_i0e": {},
+  "special_i0e_out": {},
+  "special_i1": {},
+  "special_i1_out": {},
+  "special_i1e": {},
+  "special_i1e_out": {},
+  "special_laguerre_polynomial_l": {},
+  "special_legendre_polynomial_p": {},
+  "special_log1p": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_log1p_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_log_ndtr": {},
+  "special_log_softmax": {},
+  "special_logit": {},
+  "special_logit_out": {},
+  "special_logsumexp": {},
+  "special_modified_bessel_i0": {},
+  "special_modified_bessel_i0_out": {},
+  "special_modified_bessel_i1": {},
+  "special_modified_bessel_i1_out": {},
+  "special_modified_bessel_k0": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_modified_bessel_k0_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_modified_bessel_k1": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_modified_bessel_k1_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_multigammaln": {},
+  "special_ndtr": {},
+  "special_ndtri": {},
+  "special_psi": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_psi_out": {},
+  "special_round": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "enflame不支持"
+  },
+  "special_round_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_scaled_modified_bessel_k0": {},
+  "special_scaled_modified_bessel_k0_out": {},
+  "special_scaled_modified_bessel_k1": {},
+  "special_shifted_chebyshev_polynomial_t": {},
+  "special_shifted_chebyshev_polynomial_u": {},
+  "special_shifted_chebyshev_polynomial_u_": {},
+  "special_shifted_chebyshev_polynomial_v": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_shifted_chebyshev_polynomial_w": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "skip_all"
+  },
+  "special_sinc": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_softmax": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "special_spherical_bessel_j0": {},
+  "special_xlog1py": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "special_xlogy": {},
+  "special_xlogy_": {},
+  "special_zeta": {},
+  "special_zeta_out": {},
+  "special_zeta_scalar_tensor": {},
+  "special_zeta_scalar_tensor_out": {},
+  "special_zeta_tensor_scalar": {},
+  "special_zeta_tensor_scalar_out": {},
+  "split_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "split_with_sizes_copy": {},
+  "spsolve": {},
+  "sqrt": {},
+  "sqrt_": {},
+  "square": {},
+  "square_": {},
+  "square_out": {},
+  "squeeze": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "squeeze_copy": {},
+  "sspaddmm": {},
+  "sspaddmm_out": {},
+  "stack": {},
+  "stage_deepseek_v4_mega_moe_inputs": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。FP8 四层: kernel=UNAVAILABLE, reference=UNAVAILABLE(CUDA fp8e4nv-only vLLM 量化参考), runtime=enflame GCU, performance=N/A。已在 tests/test_stage_deepseek_v4_mega_moe_inputs.py 模块级+函数级加显式 enflame 条件 skip；其它 vendor 零影响。本批标 SKIPPED(能力缺失)。"
+  },
+  "standard_gamma": {},
+  "standard_gamma_grad": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "std": {
+    "skip": "yes",
+    "skip_reason": "enflame不支持"
+  },
+  "std_mean": {},
+  "std_mean_correction": {},
+  "std_mean_correction_names": {},
+  "std_mean_correction_out": {},
+  "std_mean_dim": {},
+  "std_mean_names_dim": {},
+  "stft": {},
+  "stft_center": {},
+  "sub": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "sub_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "subtract": {},
+  "subtract_": {},
+  "sum": {},
+  "sum_dim": {},
+  "sum_dim_out": {},
+  "sum_out": {},
+  "sum_to_size": {},
+  "svd": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "swapaxes_": {},
+  "swapdims": {},
+  "swapdims_": {},
+  "swiglu": {},
+  "sym_size": {},
+  "t_": {},
+  "t_copy": {},
+  "t_copy_out": {},
+  "take": {},
+  "take_along_dim": {},
+  "take_along_dim_out": {},
+  "take_out": {},
+  "tan": {},
+  "tan_": {},
+  "tanh": {},
+  "tanh_": {},
+  "tanh_backward": {},
+  "te_rmsnorm_bwd": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "te_rmsnorm_fwd": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "tensordot": {},
+  "tensordot_out": {},
+  "thnn_conv2d": {},
+  "thnn_differentiable_gru_cell_backward": {},
+  "thnn_differentiable_lstm_cell_backward": {},
+  "thnn_fused_gru_cell": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "thnn_fused_gru_cell_backward": {
+    "skip": "yes",
+    "skip_reason": "GCU400 无对应 aten kernel（NotImplementedError），fallback_cpu 下测试仍失败，测试已按 enflame 判定整模块跳过"
+  },
+  "thnn_fused_gru_cell_backward_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "thnn_fused_gru_cell_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "thnn_fused_lstm_cell": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "thnn_fused_lstm_cell_backward": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu"
+  },
+  "thnn_fused_lstm_cell_backward_impl": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "threshold": {},
+  "threshold_": {},
+  "threshold_backward": {},
+  "tile": {},
+  "to_copy": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "to_sparse_semi_structured": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "top_k_per_row_decode": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测单用例超 30s 未返回，测试已按 enflame 判定整模块跳过"
+  },
+  "top_k_per_row_prefill": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "skip": "yes",
+    "skip_reason": "need analysis",
+    "备注": "环境变量口径: 本文件既有 env_config(fallback_cpu=all_ops) 为历史配置，本批实测 correctness 在 make_gcuir 阶段稳定 Aborted(编译器 crash)，白名单重试2次仍崩，标 SKIPPED(编译器能力缺失)。已按原则10 在 tests/test_top_k_per_row_prefill.py 模块级 pytestmark 加显式 enflame 条件 skip(16 skipped，不再 abort)，其它 vendor 零影响。仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)。"
+  },
+  "topk": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "topk_softmax": {},
+  "topk_softplus_sqrt": {},
+  "topk_w8a16": {
+    "备注": "GCU 14 passed / 139 skipped；E4M3FN Ascend 变体已用 vendor 判断 skip"
+  },
+  "trace": {
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "trace_backward": {},
+  "transform_bias_rescale_qkv": {},
+  "transpose": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "transpose_copy": {},
+  "trapezoid": {},
+  "trapz": {},
+  "triangular_solve": {},
+  "triangular_solve_out": {},
+  "tril": {},
+  "tril_": {},
+  "tril_indices": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 76/76 全通过；benchmark speedup 4~120x，已达标无需优化。本文件既有 skip 字段非本批新增，予以保留。"
+  },
+  "tril_out": {},
+  "trilinear": {},
+  "trilinear_out": {},
+  "triplet_margin_loss": {},
+  "triton_lighting_indexer_k_tiled_interface": {},
+  "triu": {},
+  "triu_": {},
+  "triu_indices": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。correctness 76/76 全通过；benchmark speedup 远超目标，已达标无需优化。"
+  },
+  "true_divide": {},
+  "true_divide_": {},
+  "trunc": {},
+  "trunc_": {},
+  "trunc_divide": {
+    "skip": "yes",
+    "skip_reason": "need analysis",
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。本批完成优化: _rne_div 三次除法改单次倒数+FMA 残差修正，correctness 62/62 + div floor/trunc 回归 66/66，speedup 0.125->2.3(>100%分档)，commit 874d377d9 已推送。本文件既有 skip=yes/need analysis 字段非本批新增，予以保留。"
+  },
+  "trunc_divide_": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu。 inplace 变体随 trunc_divide 优化(共用 _rne_div)受益，speedup 0.798->1.9。本批未改动本条目。"
+  },
+  "unbind": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "unbind_copy": {},
+  "underscore_linalg_det": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "underscore_sobol_engine_draw": {},
+  "underscore_sobol_engine_scramble_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "unflatten": {},
+  "unfold": {},
+  "unfold_backward": {},
+  "unfold_copy": {},
+  "uniform": {},
+  "uniform_": {},
+  "unique2": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "unique_consecutive": {},
+  "unique_dim": {},
+  "unique_dim_consecutive": {},
+  "unpack_seq_triton": {},
+  "unsafe_index": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测进程 core dumped（设置 ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops' 后仍崩溃），测试已按 enflame 判定整模块跳过"
+  },
+  "unsafe_index_put": {
+    "skip": "yes",
+    "skip_reason": "GCU400 实测单用例超 30s 未返回，测试已按 enflame 判定整模块跳过"
+  },
+  "unsafe_masked_index": {},
+  "unsafe_masked_index_put_accumulate": {},
+  "unsafe_split_with_sizes": {},
+  "unsafe_view": {},
+  "unsqueeze": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "unsqueeze_": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "upsample_bicubic2d": {},
+  "upsample_bicubic2d_aa": {},
+  "upsample_bicubic2d_aa_backward": {},
+  "upsample_bicubic2d_backward": {},
+  "upsample_bicubic2d_backward_grad_input": {},
+  "upsample_bilinear2d": {},
+  "upsample_bilinear2d_aa": {},
+  "upsample_bilinear2d_aa_backward": {},
+  "upsample_bilinear2d_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "upsample_bilinear2d_backward_grad_input": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "upsample_lanczos2d_aa": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "upsample_lanczos2d_aa_backward": {},
+  "upsample_lanczos2d_aa_backward_grad_input": {},
+  "upsample_lanczos2d_aa_out": {},
+  "upsample_lanczos2d_aa_vec": {},
+  "upsample_linear1d": {},
+  "upsample_linear1d_backward": {},
+  "upsample_nearest1d": {},
+  "upsample_nearest1d_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "upsample_nearest1d_backward_grad_input": {},
+  "upsample_nearest2d": {},
+  "upsample_nearest2d_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "upsample_nearest2d_backward_grad_input": {},
+  "upsample_nearest3d": {},
+  "upsample_nearest3d_backward": {},
+  "upsample_nearest3d_backward_grad_input": {},
+  "upsample_nearest_exact1d": {},
+  "upsample_nearest_exact1d_backward": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "upsample_nearest_exact1d_backward_grad_input": {},
+  "upsample_nearest_exact2d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "upsample_nearest_exact2d_backward": {},
+  "upsample_nearest_exact3d": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "upsample_nearest_exact3d_backward": {},
+  "upsample_nearest_exact3d_backward_grad_input": {},
+  "upsample_trilinear3d": {},
+  "upsample_trilinear3d_backward": {},
+  "validate_sparse_csc_tensor_args": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'",
+    "pytest_config": "--ref=cpu",
+    "skip": "yes",
+    "skip_reason": "gcu dose not support work"
+  },
+  "value_selecting_reduction_backward": {},
+  "values": {
+    "备注": "默认 GCU 参考口径 21 passed / 2 skipped（2026-11-17 复核）。torch_gcu 把稀疏 COO 的 values 存储在 CPU 侧，aten::_values 返回 CPU 副本，零拷贝别名语义不成立；tests/test_values.py 已把函数级 enflame skip 细化为仅跳过该指针相等断言（保留数值/dtype/形状/autograd 契约校验），仅 test_values_mutation_through_view 与 test_values_unsupported_layouts_reject_like_native 两例整例跳过。原 fallback_cpu=all_ops 对别名语义无帮助，已移除。"
+  },
+  "values_copy": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "values_copy_out": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "vander": {},
+  "var": {},
+  "var_correction": {
+    "pytest_config": "--ref=cpu",
+    "备注": "--ref=cpu 下 var 家族 360 passed / 0 failed（var_dim+var_correction 合计 324 passed）。默认 GCU 参考口径的 32 例失败根因在参考端：torch_gcu 原生 torch.var(dim=[0,1]) 在 200x40999x3 上返回 0.988793，CPU 真值 0.998802（偏低 1%），FlagGems 结果与 CPU 真值一致（相对误差 1.19e-07），故用 --ref=cpu 对齐。"
+  },
+  "var_dim": {
+    "pytest_config": "--ref=cpu",
+    "备注": "--ref=cpu 下 var_dim 全绿（var 家族合计 360 passed）。默认口径失败仅集中在 200x40999x3 的 dim=[0,1]/[1,0]，为 torch_gcu 原生 var 参考端偏低 1% 的缺陷，实现侧对 CPU 真值误差 1.19e-07。"
+  },
+  "var_mean": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "vdot": {},
+  "vector_norm": {
+    "skip": "yes",
+    "skip_reason": "need analysis"
+  },
+  "version": {},
+  "view_as_complex": {},
+  "view_as_complex_copy": {},
+  "view_as_real_copy": {},
+  "view_copy": {},
+  "vstack": {},
+  "w8a8_block_fp8_matmul": {
+    "date": "2026-11-19",
+    "machine": "local",
+    "optimizer": {
+      "agent": "optimizer_agent_gcu400",
+      "rounds": 12,
+      "state": "DONE"
+    },
+    "metrics": {
+      "dtype_used": "fp8_e4m3 in / fp16 out",
+      "baseline": "common generic implementation (pre-migration) + torch fp32 dequant reference",
+      "latency_before_ms": 5.475,
+      "latency_after_ms": 0.0483,
+      "speedup": 113.4,
+      "speedup_vs_torch_ref": 4.5,
+      "shapes_count": 8,
+      "note": "geometric mean over 6 measurable shapes; (1/16,4096,7168) baseline exceeded the 120 s measurement window"
+    },
+    "skip": "no",
+    "target_speedup": 1.2,
+    "knowledge_candidate": "KC_w8a8_fp8_to_fp16_dot",
+    "knowledge_candidate_info": {
+      "target_section": "compiler_traps.md / fp8 dot operand path",
+      "core_conclusion": "fp8 operands into tl.dot are wrong-valued and slow on GCU400; cast to fp16 first and transpose the loaded tile, not the converted value",
+      "decisive_data": "83x7748x3884: 34.2 ms + mismatch -> 22.2 ms + correct",
+      "promotion": "pending user authorization"
+    }
+  },
+  "weight_int4pack_mm": {
+    "pytest_config": "--ref=cpu",
+    "备注": "2026-11-17 复核：tests 已去掉函数级 enflame skip，15 passed 全绿（fp16/fp32/bf16 全覆盖）。bf16 的设备端参考依赖 aten::_convert_weight_to_int4pack，该算子在 enflame 未注册、被派发到 CPU backend 抛 NotImplementedError，参考函数已回退到同一 ATen 算子的 CPU 重载后通过。原 fallback_cpu=all_ops 无必要，已移除。benchmark 侧仍不可运行：其 baseline 走 CPU fallback，而 aten 的 int4 packer 在 CPU 无 kernel。"
+  },
+  "weight_int4pack_mm_with_scales_and_zeros": {},
+  "weight_int8pack_mm": {},
+  "weight_norm": {},
+  "weight_norm_differentiable_backward": {
+    "date": "2026-11-19",
+    "machine": "local",
+    "optimizer": {
+      "agent": "optimizer_agent_gcu400",
+      "rounds": 11,
+      "state": "DONE"
+    },
+    "metrics": {
+      "dtype_used": "fp16/fp32/bf16",
+      "baseline": "aten _weight_norm_differentiable_backward",
+      "latency_before_ms": 0.0347,
+      "latency_after_ms": 0.0112,
+      "speedup": 3.1,
+      "speedup_operator_mode": {
+        "fp16": 1.334,
+        "fp32": 0.814,
+        "bf16": 1.369,
+        "before": {
+          "fp16": 0.707,
+          "fp32": 0.702,
+          "bf16": 0.855
+        }
+      },
+      "note": "kernel-level geometric mean 3.10x over 5 shapes; operator-mode harness has a ~0.086 ms floor that hides the kernel gain"
+    },
+    "skip": "no",
+    "target_speedup": 1.2,
+    "knowledge_candidate": "KC_wn_onepass_reduce",
+    "knowledge_candidate_info": {
+      "target_section": "compiler_traps.md / loop-carried large tile",
+      "core_conclusion": "group-wise reduction backward should stay single-pass in registers; a loop-carried fp32 accumulator costs DSM materialization plus a re-read",
+      "decisive_data": "(4,8) 118.5->6.6 us; (64,128) 60.6->7.6 us; (2048,1024) 36.6->22.2 us",
+      "promotion": "pending user authorization"
+    }
+  },
+  "weight_norm_interface": {},
+  "weight_norm_interface_backward": {},
+  "where_self": {},
+  "where_self_out": {},
+  "wrapped_linear_prepack": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "wrapped_quantized_linear_prepacked": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "xlogy": {},
+  "xlogy_": {
+    "备注": "默认 GCU 参考口径 tests/test_xlogy_.py + tests/test_special_xlogy.py 合计 111 passed / 0 skipped，无需 fallback 与 --ref=cpu。"
+  },
+  "xlogy_out": {},
+  "xlogy_scalar_tensor": {},
+  "xlogy_scalar_tensor_out": {},
+  "xlogy_tensor_scalar": {},
+  "xlogy_tensor_scalar_out": {},
+  "xor": {
+    "env_config": "ENFLAME_PT_OP_DEBUG_CONFIG='fallback_cpu=all_ops'"
+  },
+  "zero": {},
+  "zero_": {},
+  "zero_out": {},
+  "zeros": {},
+  "zeros_like": {},
+  "float_power": {
+    "备注": "环境变量口径: 仅 CRITICAL-0 全局默认 64 位整数开关(不写入本文件)；无 fallback CPU 变量、无 --ref cpu；实测 fallback_cpu=all_ops 反致 core dump abort。官方 pytest 默认口径 163/163 全量 passed"
+  },
+  "_embedding_bag_dense_backward": {
+    "env_config": "仅 CRITICAL-0 全局默认 64 位整数开关",
+    "备注": "correctness 12 passed / 30 skipped（tests/test_embedding_bag_dense_backward.py）。两类 skip 均为 PyTorch 语义问题而非后端缺陷：mode=0(SUM) 的 aten::_embedding_bag 不产出 offset2bag，导致 aten::_embedding_bag_dense_backward 在该模式下必然 IndexError（纯 CPU 张量同样复现，已实测）；mode=1(MEAN) 的 12 项全部通过。官方 benchmark 仍无法建立基线（base 腿 IndexError，且 dispatch dump 显示该 aten op 只有 CPU 注册，GCU 上实为 CPU 回退口径），故官方 speedup 不作结论；2026-11-17 用仓库外绝对延迟口径（7 个官方 shape，do_bench 25/100，双臂同进程交替）完成 5 轮优化，几何平均 1.72x（8bag/16dim 10.98us 2.69x、512bag/256dim/w1000 154.23us 1.62x），关键手段：归约核固定网格 48、分组阈值 65536→16384、torch.zeros 换自带填零核、perm 直存 grad 行号。报告见 tests/_embedding_bag_dense_backward_gcu400_优化报告_20261117.docx。遗留：scale_grad_by_freq=True 分支与 aten 的「bag 首样本缩放」语义不一致（既有，官方用例未覆盖）。"
+  },
+  "_scaled_dot_product_cudnn_attention": {
+    "env_config": "仅 CRITICAL-0 全局默认 64 位整数开关",
+    "备注": "correctness 17 passed（tests/test_scaled_dot_product_cudnn_attention.py）。原 skipif 只认 cuda，已按「后端是否具备该 op 实现」收窄为 gcu+enflame 放行：gcu400 后端既有 Triton attention forward（含自然对数 LSE）又有 aten device-key 注册。实测 fp16/bf16 × 4 组 shape × causal 双向最大偏差 <= 7.8e-3（用例容差 5e-2）。"
+  }
+}

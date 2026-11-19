@@ -281,15 +281,36 @@ def _ger_bwd_b_c64(
     tl.store(o_ptr + offs_n * 2 + 1, acc_im, mask=mask_n)
 
 
+# Elements per program for the full-row forward tile (16 rows x 1024 columns at
+# 2 bytes per element is a 32 KB store span).
+_ROW_TILE_ELEMS = 16384
+# Hardware limit of the second grid axis used by the swizzled launch.
+_SWIZZLE_GRID_Y = 255
+
+
 def _forward_config(itemsize, M, N):
     """Shape-aware tile geometry for the real-dtype forward kernel.
 
-    Large shapes are memory-bound and their 64x64 grid leaves a partial wave, so
-    they get more work per program (and no mask when the shape divides exactly).
-    Small and lopsided shapes stay on the 64x64 / 4-warp configuration, where
-    the launch is already dominated by host-side dispatch.
+    Wide rows get a full-row tile: `out` is contiguous, so a [BLOCK_M, 1024] tile
+    is written as one contiguous span instead of 64-wide column strips, which is
+    what the earlier 64x64 layout paid for. Measured on gc400 bf16 (kernel only):
+
+      (1024, 1024) 64x64 -> 0.0300 ms, 16x1024 -> 0.0090 ms
+      (512 , 1024) 64x64 -> 0.0175 ms, 16x1024 -> 0.0058 ms
+      (4096, 4096) 128x128 -> 0.1225 ms, 16x1024 -> 0.0817 ms
+
+    Shapes that still divide by 128x128 keep the wide tile, everything else stays
+    on the 64x64 / 4-warp configuration where host dispatch dominates.
     """
-    if M * N >= (1 << 22):
+    row_pad = triton.next_power_of_2(N)
+    if row_pad >= 1024:
+        rows = _ROW_TILE_ELEMS // 1024
+        if M * N >= (1 << 22):
+            # The swizzled launch puts the row blocks on grid.y, which is capped
+            # at 255, so a tall M needs a taller tile to stay inside the limit.
+            rows = max(rows, triton.next_power_of_2(triton.cdiv(M, _SWIZZLE_GRID_Y)))
+        return min(rows, 64), 1024, 4
+    if M >= 128 and N >= 128:
         if itemsize <= 2:
             return 128, 128, 8
         return 128, 64, 8
@@ -431,7 +452,7 @@ class _Ger(torch.autograd.Function):
 
 
 def run(self, vec2, out=None):
-    logger.debug("GEMS_ENFLAME_GCU400 GER")
+    logger.debug("GEMS_ENFLAME GER")
     if not isinstance(self, torch.Tensor) or not isinstance(vec2, torch.Tensor):
         raise TypeError("ger: expected Tensor arguments")
     if self.dim() != 1:

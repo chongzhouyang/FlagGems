@@ -23,6 +23,10 @@ from flag_gems.utils import pointwise_dynamic
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on the order supported by the unrolled recurrence (matches the value
+# range of tests/test_special_shifted_chebyshev_polynomial_w.py)
+MAX_ORDER = 10
+
 
 @pointwise_dynamic(promotion_methods=[(0, 1, "DEFAULT")])
 @triton.jit
@@ -91,14 +95,32 @@ def _compute_w(y, n):
 
 
 def special_shifted_chebyshev_polynomial_w(x, n):
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_SHIFTED_CHEBYSHEV_POLYNOMIAL_W")
+    logger.debug("GEMS_ENFLAME SPECIAL_SHIFTED_CHEBYSHEV_POLYNOMIAL_W")
     assert x.dtype in (
         torch.float32,
         torch.float64,
     ), "shifted_chebyshev_polynomial_w only supports float32 and float64"
-    if torch.any(n > 10):
-        raise ValueError(
-            "n must be <= 10, got values up to {}. "
-            "The unrolled kernel only supports n <= 10.".format(int(n.max().item()))
+    if not isinstance(n, torch.Tensor):
+        # Scalar order: check the domain first, then materialize an int32 tensor with
+        # the same shape as x; handing pointwise_dynamic a python int makes the
+        # in-kernel .to(int32) fail.
+        scalar_order = int(n)
+        if scalar_order > MAX_ORDER or scalar_order < 0:
+            raise ValueError(
+                f"n must be in [0, {MAX_ORDER}], got {scalar_order}. "
+                f"The unrolled kernel only supports n <= {MAX_ORDER}."
+            )
+        n = torch.full_like(
+            x, scalar_order, dtype=torch.int32, memory_format=torch.contiguous_format
         )
+    else:
+        if n.numel():
+            max_order = int(n.max().item())
+            min_order = int(n.min().item())
+            if max_order > MAX_ORDER or min_order < 0:
+                raise ValueError(
+                    f"n must be in [0, {MAX_ORDER}], got values in "
+                    f"[{min_order}, {max_order}]. The unrolled kernel only "
+                    f"supports n <= {MAX_ORDER}."
+                )
     return shifted_chebyshev_polynomial_w_func(x, n)

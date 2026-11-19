@@ -64,7 +64,11 @@ def conv2d_output_size(
             num_stages=2,
         )
     ],
-    # Step 4 13-round sweep optimum (C07): 0.8018ms vs original 0.8736ms, fp16/fp32 accuracy PASS
+    # Backward-only kernel since the forward moved to the implicit-GEMM
+    # conv2d_implicit_gemm_kernel (see _launch_conv2d_implicit_gemm); the
+    # per-tap im2col form measured 50-500x slower than native on the bench
+    # core shapes, while the implicit-GEMM form lands in the convolution op's
+    # measured band.
     key=[
         "in_n",
         "weight_c",
@@ -384,10 +388,315 @@ def conv2d_backward_kernel_weight(
     tl.store(weight_pointer, accum, weight_mask)
 
 
+# Forward kernel: implicit-GEMM convolution (M = N*OH*OW, K = (C_in/groups)*
+# KH*KW, Ndim = C_out/groups), the GCU400-tuned form of the convolution op
+# kernel, kept as a local copy so the bias rounding stays conv2d-owned.  The
+# masked-lane clamping (ci_loc_v / ci_g_v / i0-i2) is required: GCU touches the
+# address of a masked load, so an unclamped index would read the neighbouring
+# allocation on the padded/masked K lanes instead of contributing zeros.
+@triton.jit
+def conv2d_implicit_gemm_kernel(
+    x_ptr,
+    w_ptr,
+    b_ptr,
+    out_ptr,
+    N,
+    C_in_pg,
+    C_out_pg,
+    OUT0,
+    OUT1,
+    OUT2,
+    IN0,
+    IN1,
+    IN2,
+    KVOL,
+    K12,
+    K2,
+    S0,
+    S1,
+    S2,
+    P0,
+    P1,
+    P2,
+    DL0,
+    DL1,
+    DL2,
+    KDIM,
+    x_ns,
+    x_cs,
+    x_0s,
+    x_1s,
+    x_2s,
+    w_ic_s,
+    w_oc_s,
+    w_k0_s,
+    w_k1_s,
+    w_k2_s,
+    out_ns,
+    out_cs,
+    out_0s,
+    out_1s,
+    out_2s,
+    F32: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
+    TRANSPOSED: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    pid_g = tl.program_id(2)
+
+    M = N * OUT0 * OUT1 * OUT2
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    mask_m = offs_m < M
+
+    # decode flattened output position m -> (n, o0, o1, o2)
+    o2 = offs_m % OUT2
+    t1 = offs_m // OUT2
+    o1 = t1 % OUT1
+    t0 = t1 // OUT1
+    o0 = t0 % OUT0
+    bidx = t0 // OUT0
+
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask_n = offs_n < C_out_pg
+    co_g = pid_g * C_out_pg + offs_n
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    k_off = tl.arange(0, BLOCK_K)
+
+    for kstart in range(0, KDIM, BLOCK_K):
+        ks = kstart + k_off
+        kmask = ks < KDIM
+
+        # decode the reduction index into (input-channel-in-group, k0, k1, k2)
+        ci_loc = ks // KVOL
+        rem = ks % KVOL
+        ka = rem // K12
+        rem2 = rem % K12
+        kb = rem2 // K2
+        kc = rem2 % K2
+
+        ci_g = pid_g * C_in_pg + ci_loc
+
+        # A masked lane can still point past its channel block: GCU touches the
+        # address of a masked load, so an unclamped index reads the
+        # neighbouring allocation (which may hold NaN/Inf left in a freed
+        # buffer) instead of the masked-off lanes.  Clamp the channel indices
+        # the same way the spatial ones (i0/i1/i2) are clamped below.
+        ci_loc_v = tl.where(kmask, ci_loc, 0)
+        ci_g_v = tl.where(kmask, ci_g, 0)
+
+        if TRANSPOSED:
+            n0 = o0[:, None] + P0 - ka[None, :] * DL0
+            i0 = n0 // S0
+            v0 = (i0 * S0 == n0) & (i0 >= 0) & (i0 < IN0)
+            n1 = o1[:, None] + P1 - kb[None, :] * DL1
+            i1 = n1 // S1
+            v1 = (i1 * S1 == n1) & (i1 >= 0) & (i1 < IN1)
+            n2 = o2[:, None] + P2 - kc[None, :] * DL2
+            i2 = n2 // S2
+            v2 = (i2 * S2 == n2) & (i2 >= 0) & (i2 < IN2)
+        else:
+            i0 = o0[:, None] * S0 - P0 + ka[None, :] * DL0
+            v0 = (i0 >= 0) & (i0 < IN0)
+            i1 = o1[:, None] * S1 - P1 + kb[None, :] * DL1
+            v1 = (i1 >= 0) & (i1 < IN1)
+            i2 = o2[:, None] * S2 - P2 + kc[None, :] * DL2
+            v2 = (i2 >= 0) & (i2 < IN2)
+
+        i0 = tl.where(v0, i0, 0)
+        i1 = tl.where(v1, i1, 0)
+        i2 = tl.where(v2, i2, 0)
+
+        amask = mask_m[:, None] & kmask[None, :] & v0 & v1 & v2
+        aoff = (
+            (bidx * x_ns)[:, None]
+            + (ci_g_v * x_cs)[None, :]
+            + i0 * x_0s
+            + i1 * x_1s
+            + i2 * x_2s
+        )
+        a = tl.load(x_ptr + aoff, mask=amask, other=0.0)
+
+        if TRANSPOSED:
+            icv = ci_g_v[:, None]
+            ocv = tl.where(mask_n, offs_n, 0)[None, :]
+        else:
+            icv = ci_loc_v[:, None]
+            ocv = tl.where(mask_n, co_g, 0)[None, :]
+
+        woff = (
+            icv * w_ic_s
+            + ocv * w_oc_s
+            + ka[:, None] * w_k0_s
+            + kb[:, None] * w_k1_s
+            + kc[:, None] * w_k2_s
+        )
+        bmask = kmask[:, None] & mask_n[None, :]
+        b = tl.load(w_ptr + woff, mask=bmask, other=0.0)
+
+        if F32:
+            acc = tl.dot(a, b, acc, input_precision="ieee")
+        else:
+            acc = tl.dot(a, b, acc)
+
+    if HAS_BIAS:
+        # One fp32 rounding at the store: the conv2d accuracy gate compares
+        # against a CPU fp32-upcast reference, which rounds the biased result
+        # once.  The two-rounding variant (round the conv result to the output
+        # dtype, then add the bias and round again) flips the last fp16 bit on
+        # values sitting on a rounding boundary (measured: 10/72 full-suite
+        # cases 1 ULP over tolerance, e.g. -0.8057 vs -0.8066).
+        bv = tl.load(b_ptr + tl.where(mask_n, co_g, 0), mask=mask_n, other=0.0).to(
+            tl.float32
+        )
+        acc = acc + bv[None, :]
+
+    ooff = (
+        (bidx * out_ns)[:, None]
+        + (co_g * out_cs)[None, :]
+        + (o0 * out_0s)[:, None]
+        + (o1 * out_1s)[:, None]
+        + (o2 * out_2s)[:, None]
+    )
+    smask = mask_m[:, None] & mask_n[None, :]
+    tl.store(out_ptr + ooff, acc.to(out_ptr.dtype.element_ty), mask=smask)
+
+
+# Tile table + launch harness for the forward pass; conv2d only needs the 2-D
+# specialization, so the rank decoding collapses with IN2 = OUT2 = 1 and the
+# trailing strides zero.
+
+
+def _next_pow2(v, lo, hi):
+    """Clamp ``v`` up to a power of two inside ``[lo, hi]``."""
+    p = lo
+    while p < v and p < hi:
+        p *= 2
+    return p
+
+
+# Below this many implicit-GEMM MACs the kernel retires inside its own launch
+# latency, so the tiling cannot be the bottleneck and is left alone.
+_COMPUTE_BOUND_MACS = 1 << 20
+
+
+def _select_tiles(M, C_out_pg, KDIM, is_ieee_fp32):
+    """Pick implicit-GEMM tiles for a 2-D (M, C_out_pg, KDIM) problem.
+
+    Measured on the conv2d bench core shapes, Triton GCU 4.1.6 (do_bench
+    median, 12 shape families x 16 tile variants, all variants value-checked
+    against a CPU reference):
+
+      * num_warps=1 wins by 10-13x everywhere (a single warp keeps the MMA
+        pipeline ownership intact; w2/w4 split the operand tiles across warps
+        and serialize the dot issue path). BK stays 32: BK=64 doubles the
+        2-D index/mask vectors and loses 2.5-3x.
+      * 16-bit keeps BM=128; the BN floor drops from 64 to 32 - the masked
+        half-tile costs nothing while the halved B-side traffic pays 2-4%
+        on every shape (e.g. 20.6ms vs 21.1ms at (32,64,128,128)x3x3;
+        104.2ms vs 107.4ms at (32,64,210,210)x5x5).
+      * fp32 (ieee FMA, no MMA) keeps the shallow BM=64 tile of the
+        convolution op and takes BN=32 as well (25541us vs 26811us at
+        (32,64,128,128); 153459us vs 157764us at (32,64,210,210)x5x5;
+        359.6us vs 366.2us and 1870us vs 1905us on the small/mid shapes).
+    """
+    if M * C_out_pg * KDIM < _COMPUTE_BOUND_MACS:
+        return 32, 16, 32, 1
+    if is_ieee_fp32:
+        if KDIM <= 64:
+            return 128, 64, 32, 1
+        return 64, 32, 32, 1
+    return 128, _next_pow2(C_out_pg, 32, 128), 32, 1
+
+
+def _launch_conv2d_implicit_gemm(
+    x, w, bias, stride, padding, dilation, groups, out_height, out_width
+):
+    n_ = int(x.shape[0])
+    c_in_pg = int(x.shape[1]) // groups
+    c_out = int(w.shape[0])
+    c_out_pg = c_out // groups
+    kvol = int(w.shape[2]) * int(w.shape[3])
+    kdim = c_in_pg * kvol
+    m = n_ * out_height * out_width
+
+    out = torch.empty(
+        (n_, c_out, out_height, out_width), device=x.device, dtype=x.dtype
+    )
+    if m <= 0 or c_out_pg <= 0 or kdim <= 0 or c_out <= 0:
+        return out
+
+    has_bias = bias is not None and int(bias.numel()) > 0
+    b_ptr = bias if has_bias else x
+
+    block_m, block_n, block_k, num_warps = _select_tiles(
+        m, c_out_pg, kdim, x.dtype == torch.float32
+    )
+
+    grid = (triton.cdiv(m, block_m), triton.cdiv(c_out_pg, block_n), groups)
+    conv2d_implicit_gemm_kernel[grid](
+        x,
+        w,
+        b_ptr,
+        out,
+        n_,
+        c_in_pg,
+        c_out_pg,
+        out_height,
+        out_width,
+        1,
+        int(x.shape[2]),
+        int(x.shape[3]),
+        1,
+        kvol,
+        int(w.shape[3]),
+        1,
+        stride[0],
+        stride[1],
+        1,
+        padding[0],
+        padding[1],
+        0,
+        dilation[0],
+        dilation[1],
+        1,
+        kdim,
+        int(x.stride(0)),
+        int(x.stride(1)),
+        int(x.stride(2)),
+        int(x.stride(3)),
+        0,
+        int(w.stride(1)),
+        int(w.stride(0)),
+        int(w.stride(2)),
+        int(w.stride(3)),
+        0,
+        int(out.stride(0)),
+        int(out.stride(1)),
+        int(out.stride(2)),
+        int(out.stride(3)),
+        0,
+        F32=(x.dtype == torch.float32),
+        HAS_BIAS=has_bias,
+        TRANSPOSED=False,
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        BLOCK_K=block_k,
+        num_warps=num_warps,
+    )
+    return out
+
+
 class Conv2d(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, weight, bias, stride, padding, dilation, groups):
-        logger.debug("GEMS_ENFLAME_GCU400 CONV2D")
+        logger.debug("GEMS_ENFLAME CONV2D")
         assert weight.ndim == 4, "Weights must be 4D, received shape {weight.shape}"
         assert (
             bias is None or bias.ndim == 1
@@ -417,32 +726,6 @@ class Conv2d(torch.autograd.Function):
 
         in_n, _, input_height, input_width = input.shape
         out_c, weight_c, weight_height, weight_width = weight.shape
-        orig_weight_c = weight_c  # Save original before potential padding
-
-        # Save original tensors for backward BEFORE padding
-        orig_input = input
-        orig_weight = weight
-
-        # Triton tl.dot requires K >= 16. The K dimension in conv2d im2col matmul
-        # is BLOCK_CI which tiles over weight_c. When weight_c < 16, AABS
-        # (Auto-Adjusted Block Size) shrinks BLOCK_CI to next_power_of_2(weight_c)
-        # which violates the K >= 16 constraint. Pad input/weight channels to 16.
-        _MIN_DOT_K = 16
-        if weight_c < _MIN_DOT_K:
-            pad_c = _MIN_DOT_K - weight_c
-            if groups == 1:
-                # Simple case: pad channel dim at the end
-                input = flag_gems.pad(input, (0, 0, 0, 0, 0, pad_c))
-            else:
-                # For grouped conv, must pad each group's channels independently.
-                # Reshape to (N, groups, weight_c, H, W), pad weight_c dim, reshape back.
-                N, C, H, W = input.shape
-                input = input.reshape(N, groups, weight_c, H, W)
-                input = flag_gems.pad(input, (0, 0, 0, 0, 0, pad_c))
-                input = input.reshape(N, groups * (weight_c + pad_c), H, W)
-            # Pad weight: (out_c, weight_c, kH, kW) -> (out_c, weight_c+pad_c, kH, kW)
-            weight = flag_gems.pad(weight, (0, 0, 0, 0, 0, pad_c))
-            weight_c = weight_c + pad_c
 
         out_height = conv2d_output_size(
             input_height, weight_height, stride_height, padding_height, dilation_height
@@ -451,60 +734,24 @@ class Conv2d(torch.autograd.Function):
             input_width, weight_width, stride_width, padding_width, dilation_width
         )
 
-        output_dtype = input.dtype
-        output = torch.empty(
-            (in_n, out_c, out_height, out_width),
-            device=input.device,
-            dtype=output_dtype,
-        )
-
-        # BLOCK_NI_HO_WO along the in_n, out_height, and out_width dimensions,
-        # BLOCK_CO along the out_c,
-        # one group per cat.
-        # Each CTA reserves its first PAD_LANES rows as invalid (see
-        # conv2d_forward_kernel), so shift the covered range accordingly.
-        PAD_LANES = 12  # noqa: F841
-        grid = lambda META: (
-            triton.cdiv(
-                in_n * out_height * out_width,
-                META["BLOCK_NI_HO_WO"],
-            ),
-            triton.cdiv(int(out_c // groups), META["BLOCK_CO"]),
-            groups,
-        )
-
-        if bias is None:
-            bias_pointer = torch.zeros(out_c, device=input.device, dtype=output_dtype)
-        else:
-            bias_pointer = bias
-        conv2d_forward_kernel[grid](
+        # Forward = one implicit-GEMM kernel launch (see
+        # _launch_conv2d_implicit_gemm). The K<16 channel-padding dance of the
+        # per-tap kernel is not needed here: BLOCK_K stays 32 and masked K
+        # lanes contribute zeros to the dot.
+        output = _launch_conv2d_implicit_gemm(
             input,
             weight,
-            output,
-            bias_pointer,
-            in_n,
-            input_height,
-            input_width,
-            out_c,
+            bias,
+            (stride_height, stride_width),
+            (padding_height, padding_width),
+            (dilation_height, dilation_width),
+            groups,
             out_height,
             out_width,
-            *input.stride(),
-            *weight.stride(),
-            *output.stride(),
-            weight_c,
-            weight_height,
-            weight_width,
-            stride_height,
-            stride_width,
-            padding_height,
-            padding_width,
-            dilation_height,
-            dilation_width,
-            groups=groups,
         )
 
-        # Save ORIGINAL (unpadded) tensors for backward
-        ctx.save_for_backward(orig_weight, orig_input, bias)
+        # Save ORIGINAL tensors for backward
+        ctx.save_for_backward(weight, input, bias)
 
         ctx.stride = (stride_height, stride_width)
         ctx.padding = (padding_height, padding_width)
@@ -512,7 +759,7 @@ class Conv2d(torch.autograd.Function):
 
         ctx.weight_info = (
             int(out_c / groups),
-            orig_weight_c,
+            weight_c,
             weight_height,
             weight_width,
         )
@@ -526,7 +773,7 @@ class Conv2d(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, out_grad):
-        logger.debug("GEMS_ENFLAME_GCU400 CONV2D_VJP")
+        logger.debug("GEMS_ENFLAME CONV2D_VJP")
         weight, input, bias = ctx.saved_tensors
         # (out_c equals origin cout divide groups)
         out_c, weight_c, weight_height, weight_width = ctx.weight_info
@@ -702,7 +949,7 @@ class Conv2d(torch.autograd.Function):
 
 # todo test SymInt[2] of stride or padding
 def conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
-    logger.debug("GEMS_ENFLAME_GCU400 CONV2D")
+    logger.debug("GEMS_ENFLAME CONV2D")
     if isinstance(padding, str):
         if padding == "same":
             assert stride == 1, "Doesn't support any stride values other than 1 \

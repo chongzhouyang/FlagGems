@@ -131,6 +131,13 @@ def acosh(A):
 
 def acosh_(A):
     logger.debug("GEMS_ENFLAME ACOSH_")
+    # ATen rejects in-place acosh on integer and bool inputs (the float result
+    # cannot be cast back into the output buffer); mirror that instead of
+    # silently truncating.
+    if not A.dtype.is_floating_point:
+        raise RuntimeError(
+            "result type Float can't be cast to the desired output type " f"{A.dtype}"
+        )
     if A.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         acosh_func(A, out0=A)
         return A

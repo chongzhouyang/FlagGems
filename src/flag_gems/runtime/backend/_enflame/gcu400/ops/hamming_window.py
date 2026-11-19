@@ -22,14 +22,50 @@ import triton
 import triton.language as tl
 
 from flag_gems import runtime
+from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
-from flag_gems.utils import triton_lang_extension as ext
 
 logger = logging.getLogger(__name__)
 
+NUM_SIPS = 24
+
+# The device caps grid.x at 65535 programs (triton.runtime.errors.
+# OutOfResources otherwise), so the flat window fill uses a grid-stride
+# loop over BLOCK_SIZE tiles like abs.py / copy: grid is clamped to a
+# small multiple of the SIP count and every program walks the tiles
+# pid, pid + num_pids, ...  This keeps one 1D launch form for every
+# window_length instead of a 2D grid decomposition.
+GRID_CAP = NUM_SIPS * 2
+
+# int32 offset safe domain: the masked tail block evaluates
+# block_id * BLOCK_SIZE + arange for masked lanes as well, reaching up
+# to cdiv(N, BLOCK) * BLOCK - 1; keep N <= 2^31 - 2^17 (BLOCK <= 131072)
+# so flat int32 offsets cannot wrap negative on the tail block.  Larger
+# windows take the WIDE (int64 offset) arm of the kernel.
+_INT32_SAFE_LIMIT = (1 << 31) - (1 << 17)
+
+PI = tl.constexpr(3.141592653589793)
+
+# fp32 lane: cos(t) for t in [0, 2*pi] via the 5-coefficient even
+# minimax polynomial fitted on [-pi, pi] (same fit as randn.py, cos max
+# err 8.3e-05).  val error stays <= beta * 8.3e-05 = 3.9e-05, well
+# inside the fp32 accuracy tolerance (atol 1e-4).  Replacing the
+# libdevice tl.cos nearly halves the big-shape kernel time
+# (device-measured 2^30 fp32: 6.15 ms -> 3.4 ms); the no-cos store
+# floor is 1.33 ms.  The 16-bit lane cannot use a polynomial stand-in:
+# its mirror chain rounds every intermediate to the output dtype, and
+# any cos that differs from the native tl.cos bits by even a sub-ulp
+# margin (deg-12 fit, max err 1.1e-08, tried and device-verified) drifts
+# to 2-ulp mismatches at fp16 values in [0.25, 0.5) and breaks the
+# tolerance there, so it keeps the libdevice tl.cos.
+_C2 = tl.constexpr(-4.99744345256876943e-01)
+_C4 = tl.constexpr(4.14830130757504120e-02)
+_C6 = tl.constexpr(-1.33820223333839584e-03)
+_C8 = tl.constexpr(1.87756032403289852e-05)
+
 
 @libentry()
-@triton.jit
+@triton.jit(do_not_specialize=["window_length"])
 def hamming_window_kernel(
     out_ptr,
     window_length,
@@ -38,34 +74,108 @@ def hamming_window_kernel(
     beta,
     LOW_PRECISION: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    EVEN: tl.constexpr,
+    WIDE: tl.constexpr,
 ):
-    pid = ext.program_id(0)
-    idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = idx < window_length
+    pid = tl.program_id(0)
+    num_pids = tl.num_programs(0)
+    num_blocks = tl.cdiv(window_length, BLOCK_SIZE)
+    arange = tl.arange(0, BLOCK_SIZE)
 
     dtype = out_ptr.dtype.element_ty
 
-    if LOW_PRECISION:
-        # Mirror torch's computation op-by-op. torch evaluates each elementary
-        # op (arange, mul, cos, ...) in the output dtype, rounding the result of
-        # every step. tl.cos requires fp32, so we compute in fp32 but round back
-        # to the output dtype after each step to reproduce torch's results
-        # bit-for-bit (observable for float16 / bfloat16).
-        n = idx.to(dtype).to(tl.float32)  # arange in output dtype
-        x = (n * scale).to(dtype).to(tl.float32)  # x = n * (pi / (N - 1))
-        # hamming: alpha - beta * cos(2x)
-        x2 = (x * 2.0).to(dtype).to(tl.float32)  # 2x
-        c = tl.cos(x2.to(dtype).to(tl.float32)).to(dtype).to(tl.float32)  # cos(2x)
-        term = (c * beta).to(dtype).to(tl.float32)  # beta * cos(2x)
-        val = (alpha - term).to(dtype)  # alpha - term
-    else:
-        # fp32 / fp64: compute directly in the native dtype (tl.cos supports
-        # both), keeping full precision.
-        n = idx.to(dtype)
-        x = n * scale
-        val = (alpha - beta * tl.cos(2.0 * x)).to(dtype)
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        if WIDE:
+            idx = block_id.to(tl.int64) * BLOCK_SIZE + arange
+        else:
+            idx = block_id * BLOCK_SIZE + arange
 
-    tl.store(out_ptr + idx, val, mask=mask)
+        if LOW_PRECISION:
+            # Mirror torch's computation op-by-op. torch evaluates each
+            # elementary op (arange, mul, cos, ...) in the output dtype,
+            # rounding the result of every step, so the kernel rounds
+            # back to the output dtype after each step to reproduce
+            # torch's results bit-for-bit (fp16 / bf16 observable).  In
+            # particular the cos OUTPUT must be rounded to the output
+            # dtype (dropping that rounding drifts to 2-ulp mismatches
+            # at fp16 values in [0.25, 0.5) and breaks the tolerance
+            # there, device-verified), and the libdevice tl.cos matches
+            # the native cos bits and must not be replaced by a
+            # polynomial.
+            n = idx.to(dtype).to(tl.float32)  # arange in output dtype
+            x = (n * scale).to(dtype).to(tl.float32)  # x = n * scale
+            t = (x * 2.0).to(dtype).to(tl.float32)  # 2x
+            c = tl.cos(t).to(dtype).to(tl.float32)  # cos(2x), rounded like torch's cos_
+            term = (c * beta).to(dtype).to(tl.float32)  # beta * cos(2x)
+            val = (alpha - term).to(dtype)  # alpha - term
+
+        else:
+            # fp32: compute directly in the native dtype; the minimax
+            # polynomial replaces the libdevice tl.cos (see the _C*
+            # note).
+            n = idx.to(dtype)
+            x = n * scale
+            t = 2.0 * x
+            # cos(t) = -cos(t - pi); u in [-pi, pi]
+            u = t - PI
+            u2 = u * u
+            u4 = u2 * u2
+            u6 = u2 * u4
+            u8 = u4 * u4
+            c = -(
+                (_C8 * u8 + _C6 * u6) + (_C4 * u4 + _C2 * u2) + 9.99916607180738048e-01
+            )
+            val = (alpha - beta * c).to(dtype)
+
+        if EVEN:
+            tl.store(out_ptr + idx, val)
+        else:
+            tl.store(out_ptr + idx, val, mask=idx < window_length)
+
+
+def _choose_launch(n_total, itemsize):
+    # GCU400 retune (device-measured, do_bench median, bench kernel
+    # mode): tiny windows want a small latency tile (B1024), the 16M
+    # mid bucket B8192/nw4, and the 1G bucket splits by dtype --
+    # fp32 B65536/nw2, 16-bit B16384/nw4 (mirror chain).
+    if n_total <= 8192:
+        return 1024, 2
+    if n_total <= (1 << 24):
+        return 8192, 4
+    if itemsize == 4:
+        return 65536, 2
+    return 16384, 4
+
+
+def _launch_window(out, window_length, periodic, alpha, beta, dtype):
+    # torch.hamming_window returns [1.0] for window_length == 1; reuse the
+    # plain kernel by substituting alpha=1, beta=0 (no separate fill op).
+    # scale is then unused (and would divide by zero for periodic=False).
+    if window_length == 1:
+        alpha = 1.0
+        beta = 0.0
+        scale = 1.0
+    else:
+        # For periodic windows the effective full size N is window_length + 1.
+        full_length = window_length + 1 if periodic else window_length
+        scale = math.pi / (full_length - 1)
+
+    low_precision = dtype in (torch.float16, torch.bfloat16)
+    block_size, num_warps = _choose_launch(window_length, out.element_size())
+    grid_size = min(triton.cdiv(window_length, block_size), GRID_CAP)
+    with torch_device_fn.device(out.device):
+        hamming_window_kernel[(grid_size,)](
+            out,
+            window_length,
+            scale,
+            alpha,
+            beta,
+            low_precision,
+            BLOCK_SIZE=block_size,
+            EVEN=window_length % block_size == 0,
+            WIDE=window_length > _INT32_SAFE_LIMIT,
+            num_warps=num_warps,
+        )
 
 
 def hamming_window(
@@ -77,7 +187,7 @@ def hamming_window(
     device=None,
     pin_memory=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 HAMMING_WINDOW")
+    logger.debug("GEMS_ENFLAME HAMMING_WINDOW")
     assert window_length >= 0, "window_length must be non-negative"
 
     if dtype is None:
@@ -113,25 +223,12 @@ def hamming_window(
 
     if window_length == 0:
         return out
-    if window_length == 1:
-        return torch.fill(out, 1.0)
 
     # Default Hamming window coefficients
     alpha = 0.54
     beta = 0.46
 
-    # For periodic windows the effective full size N is window_length + 1.
-    full_length = window_length + 1 if periodic else window_length
-    scale = math.pi / (full_length - 1)
-
-    low_precision = dtype in (torch.float16, torch.bfloat16)
-    # 1024 elements per program: a standard 1D launch block that balances
-    # occupancy and register pressure for this elementwise window fill.
-    BLOCK_SIZE = 1024
-    grid = (triton.cdiv(window_length, BLOCK_SIZE),)
-    hamming_window_kernel[grid](
-        out, window_length, scale, alpha, beta, low_precision, BLOCK_SIZE=BLOCK_SIZE
-    )
+    _launch_window(out, window_length, periodic, alpha, beta, dtype)
     return out
 
 
@@ -144,7 +241,7 @@ def hamming_window_periodic(
     device=None,
     pin_memory=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 HAMMING_WINDOW_PERIODIC")
+    logger.debug("GEMS_ENFLAME HAMMING_WINDOW_PERIODIC")
     return hamming_window(
         window_length,
         periodic,
@@ -165,7 +262,7 @@ def hamming_window_periodic_alpha(
     device=None,
     pin_memory=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 HAMMING_WINDOW_PERIODIC_ALPHA")
+    logger.debug("GEMS_ENFLAME HAMMING_WINDOW_PERIODIC_ALPHA")
     assert window_length >= 0, "window_length must be non-negative"
 
     if dtype is None:
@@ -202,23 +299,11 @@ def hamming_window_periodic_alpha(
 
     if window_length == 0:
         return out
-    if window_length == 1:
-        return torch.fill(out, 1.0)
 
     # PyTorch uses a fixed beta of 0.46 regardless of the alpha argument.
     beta = 0.46
 
-    full_length = window_length + 1 if periodic else window_length
-    scale = math.pi / (full_length - 1)
-
-    low_precision = dtype in (torch.float16, torch.bfloat16)
-    # 1024 elements per program: a standard 1D launch block that balances
-    # occupancy and register pressure for this elementwise window fill.
-    BLOCK_SIZE = 1024
-    grid = (triton.cdiv(window_length, BLOCK_SIZE),)
-    hamming_window_kernel[grid](
-        out, window_length, scale, alpha, beta, low_precision, BLOCK_SIZE=BLOCK_SIZE
-    )
+    _launch_window(out, window_length, periodic, alpha, beta, dtype)
     return out
 
 
@@ -233,7 +318,7 @@ def hamming_window_periodic_alpha_beta(
     device=None,
     pin_memory=None,
 ):
-    logger.debug("GEMS_ENFLAME_GCU400 HAMMING_WINDOW_PERIODIC_ALPHA_BETA")
+    logger.debug("GEMS_ENFLAME HAMMING_WINDOW_PERIODIC_ALPHA_BETA")
     assert window_length >= 0, "window_length must be non-negative"
 
     if dtype is None:
@@ -271,18 +356,6 @@ def hamming_window_periodic_alpha_beta(
 
     if window_length == 0:
         return out
-    if window_length == 1:
-        return torch.fill(out, 1.0)
 
-    full_length = window_length + 1 if periodic else window_length
-    scale = math.pi / (full_length - 1)
-
-    low_precision = dtype in (torch.float16, torch.bfloat16)
-    # 1024 elements per program: a standard 1D launch block that balances
-    # occupancy and register pressure for this elementwise window fill.
-    BLOCK_SIZE = 1024
-    grid = (triton.cdiv(window_length, BLOCK_SIZE),)
-    hamming_window_kernel[grid](
-        out, window_length, scale, alpha, beta, low_precision, BLOCK_SIZE=BLOCK_SIZE
-    )
+    _launch_window(out, window_length, periodic, alpha, beta, dtype)
     return out

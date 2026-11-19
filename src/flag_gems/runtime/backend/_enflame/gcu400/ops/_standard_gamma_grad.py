@@ -20,10 +20,23 @@ import triton
 import triton.language as tl
 
 from flag_gems.utils import pointwise_dynamic, tl_extra_shim
+from flag_gems.utils.pointwise_dynamic import CodeGenConfig
 
 _pow = tl_extra_shim.pow
 
 logger = logging.getLogger(__name__)
+
+# gcu400: the branchy body (20-step digamma recurrence plus the Taylor / Rice /
+# rational branches) is miscompiled once a tile holds >= 1024 lanes — every
+# element comes out wrong, while n <= 256 is exact.  Capping the pointwise
+# tile at 256 keeps the generated kernel correct at every size tested.
+_CFG = CodeGenConfig(
+    max_tile_size=256,
+    max_grid_size=(48, 1, 1),
+    max_num_warps_per_cta=4,
+    prefer_block_pointer=True,
+    prefer_1d_tile=False,
+)
 
 
 @triton.jit
@@ -129,7 +142,11 @@ def _standard_gamma_grad_one(alpha, x):
     return result
 
 
-@pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, True],
+    promotion_methods=[(0, 1, "DEFAULT")],
+    config=_CFG,
+)
 @triton.jit
 def _standard_gamma_grad_func(self_grad, output):
     # Preserve double precision for fp64 inputs; otherwise compute in fp32
@@ -144,7 +161,7 @@ def _standard_gamma_grad_func(self_grad, output):
 
 
 def standard_gamma_grad(self_grad, output):
-    logger.debug("GEMS_ENFLAME_GCU400 STANDARD_GAMMA_GRAD")
+    logger.debug("GEMS_ENFLAME STANDARD_GAMMA_GRAD")
     # Match the native _standard_gamma_grad dtype contract: both inputs must be
     # floating point and share the same dtype (no promotion of mixed or integer
     # inputs).

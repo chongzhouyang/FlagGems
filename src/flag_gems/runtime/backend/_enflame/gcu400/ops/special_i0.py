@@ -25,56 +25,58 @@ logger = logging.getLogger(__name__)
 @triton.jit
 def _special_i0_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
-    block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
+    num_pids = tl.num_programs(axis=0)
+    num_blocks = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE
+    for block_id in tl.range(pid, num_blocks, num_pids):
+        offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
 
-    x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
-    x_f32 = x.to(tl.float32)
-    ax = tl.abs(x_f32)
+        x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+        x_f32 = x.to(tl.float32)
+        ax = tl.abs(x_f32)
 
-    # Small region: |x| <= 3.75
-    t = x_f32 / 3.75
-    y = t * t
-    p_small = 1.0 + y * (
-        3.5156229
-        + y
-        * (
-            3.0899424
-            + y * (1.2067492 + y * (0.2659732 + y * (0.0360768 + y * 0.0045813)))
+        # Small region: |x| <= 3.75
+        t = x_f32 / 3.75
+        y = t * t
+        p_small = 1.0 + y * (
+            3.5156229
+            + y
+            * (
+                3.0899424
+                + y * (1.2067492 + y * (0.2659732 + y * (0.0360768 + y * 0.0045813)))
+            )
         )
-    )
 
-    # Large region: |x| > 3.75
-    yb = 3.75 / ax
-    p_big = 0.39894228 + yb * (
-        0.01328592
-        + yb
-        * (
-            0.00225319
+        # Large region: |x| > 3.75
+        yb = 3.75 / ax
+        p_big = 0.39894228 + yb * (
+            0.01328592
             + yb
             * (
-                -0.00157565
+                0.00225319
                 + yb
                 * (
-                    0.00916281
+                    -0.00157565
                     + yb
                     * (
-                        -0.02057706
-                        + yb * (0.02635537 + yb * (-0.01647633 + yb * 0.00392377))
+                        0.00916281
+                        + yb
+                        * (
+                            -0.02057706
+                            + yb * (0.02635537 + yb * (-0.01647633 + yb * 0.00392377))
+                        )
                     )
                 )
             )
         )
-    )
-    res_big = tl.exp(ax) * p_big / tl.sqrt(ax)
+        res_big = tl.exp(ax) * p_big / tl.sqrt(ax)
 
-    use_small = ax <= 3.75
-    res = tl.where(use_small, p_small, res_big)
+        use_small = ax <= 3.75
+        res = tl.where(use_small, p_small, res_big)
 
-    # Cast back to input dtype for storage
-    res = res.to(x.dtype)
-    tl.store(out_ptr + offsets, res, mask=mask)
+        # Cast back to input dtype for storage
+        res = res.to(x.dtype)
+        tl.store(out_ptr + offsets, res, mask=mask)
 
 
 def _launch_special_i0(out: torch.Tensor, x: torch.Tensor):
@@ -105,7 +107,7 @@ def _launch_special_i0(out: torch.Tensor, x: torch.Tensor):
     # BLOCK_SIZE fixed at 1024: a common power-of-two tile that saturates
     # memory bandwidth for this elementwise kernel without autotuning.
     BLOCK_SIZE = 1024
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    grid = lambda meta: (min(triton.cdiv(n_elements, meta["BLOCK_SIZE"]), 65535),)
 
     _special_i0_kernel[grid](x_contig, out_contig, n_elements, BLOCK_SIZE=BLOCK_SIZE)
 
@@ -119,7 +121,7 @@ def special_i0(x: torch.Tensor):
     ATen wrapper: special_i0(Tensor self) -> Tensor
     Computes the zeroth order modified Bessel function of the first kind for each element.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_I0")
+    logger.debug("GEMS_ENFLAME SPECIAL_I0")
     if x.device.type != device.name:
         raise ValueError(
             f"special_i0: input tensor must be on the {device.name} device"
@@ -134,7 +136,7 @@ def special_i0_out(x: torch.Tensor, out: torch.Tensor):
     """
     ATen wrapper: special_i0.out(Tensor self, Tensor out) -> Tensor
     """
-    logger.debug("GEMS_ENFLAME_GCU400 SPECIAL_I0_OUT")
+    logger.debug("GEMS_ENFLAME SPECIAL_I0_OUT")
     if not (x.device.type == device.name and out.device.type == device.name):
         raise ValueError(
             "special_i0_out: input and output tensors must be on the "

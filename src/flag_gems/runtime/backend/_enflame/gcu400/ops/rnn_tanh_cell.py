@@ -152,10 +152,13 @@ def _rnn_tanh_cell_kernel(
 def _block(value, limit):
     """Smallest power of two at least ``value``, clamped to [16, limit].
 
-    16 is ``tl.dot``'s minimum tile extent. The upper clamps are small on
-    purpose: the kernel keeps two accumulator tiles live at once, so a wider
-    tile buys no extra reuse and only costs registers and occupancy. Capping
-    the tile instead lets a wide layer spread over more blocks.
+    16 is ``tl.dot``'s minimum tile extent. The upper clamps are 128 for the
+    reduction and hidden extents: on GCU400 a 16x128 output tile with a
+    128-wide reduction step keeps the two accumulators in registers while
+    amortising the dot/TMA setup, and it measured 4.4x faster than the older
+    16x32/64 caps on the largest benchmark shape ((128, 512, 512) fp16:
+    0.107ms -> 0.024ms). Wider K tiles than the layer size stay clamped by
+    ``value``, so small layers keep their small tiles.
     """
     return max(16, min(limit, triton.next_power_of_2(max(int(value), 1))))
 
@@ -246,7 +249,7 @@ def rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
     Returns:
         The new hidden state of shape ``(batch, hidden_size)``.
     """
-    logger.debug("GEMS_ENFLAME_GCU400 RNN_TANH_CELL")
+    logger.debug("GEMS_ENFLAME RNN_TANH_CELL")
     _check_cell_args("rnn_tanh_cell", input, hx, w_ih, w_hh, b_ih, b_hh, 1)
 
     batch, input_size = input.shape
@@ -256,8 +259,12 @@ def rnn_tanh_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
         return out
 
     block_b = _block(batch, 16)
-    block_h = _block(hidden_size, 32)
-    block_k = _block(max(input_size, hidden_size), 64)
+    # Wide 128x128 fragments keep both accumulators in registers for the
+    # 16-bit/fp32 accumulators; fp64 doubles the register footprint, so it
+    # keeps the narrower caps that measured best for it.
+    wide_tiles = input.dtype != torch.float64
+    block_h = _block(hidden_size, 128 if wide_tiles else 32)
+    block_k = _block(max(input_size, hidden_size), 128 if wide_tiles else 64)
 
     _rnn_tanh_cell_kernel[
         (triton.cdiv(batch, block_b), triton.cdiv(hidden_size, block_h))
