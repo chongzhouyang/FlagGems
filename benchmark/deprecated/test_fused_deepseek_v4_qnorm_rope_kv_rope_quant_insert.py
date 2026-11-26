@@ -21,7 +21,7 @@ import torch
 import flag_gems
 from flag_gems.utils.device_info import get_device_capability
 
-from .. import base
+from . import base
 
 
 def is_support_fp8e4nv():
@@ -168,6 +168,10 @@ class FusedDeepseekV4QnormRopeKVRopeQuantInsertBenchmark(base.Benchmark):
         yield (q, kv, k_cache, slot_mapping, positions, cos_sin_cache, eps, block_size)
 
 
+@pytest.mark.skipif(
+    flag_gems.vendor_name == "enflame",
+    reason="aten and cpu dosenot support",
+)
 @pytest.mark.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert
 @pytest.mark.skipif(
     not VLLM_REF_AVAILABLE, reason="The referenced vLLM implementation is not installed"

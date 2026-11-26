@@ -22,7 +22,7 @@ import torch
 
 import flag_gems
 
-from .. import base
+from . import base
 
 try:
     from vllm.third_party.flashmla.flash_mla_interface import (
@@ -37,7 +37,7 @@ except ImportError:
     HAS_CUDA_FLASHMLA = False
 
 from flag_gems import flash_mla_with_kvcache as triton_flash_mla
-from flag_gems.fused.flash_mla_with_kvcache import (
+from flag_gems.deprecated.flash_mla_with_kvcache import (
     get_mla_metadata as triton_get_mla_metadata,
 )
 
